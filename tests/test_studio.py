@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-from core import DEFAULTS, Engine, Store, TZ, fetch_offers, rank_offers, shopee_query, validate_settings
+import time
+from core import DEFAULTS, Engine, Store, TZ, fetch_offers, fetch_product_page, rank_offers, shopee_query, validate_settings
 from app import create_app
 
 
@@ -22,7 +23,7 @@ def good_output(count=0, verdicts=None):
 class FakeRunner:
     def __init__(self, output=None, error=None):
         self.output, self.error, self.calls = output or good_output(), error, []
-    def run(self, prompt, schema, images, check, log=None):
+    def run(self, prompt, schema, images, check, log=None, deadline=None):
         self.calls.append(dict(prompt=prompt, images=images))
         if self.error:
             raise self.error
@@ -78,6 +79,19 @@ class RankingTest(unittest.TestCase):
         request.side_effect=[TimeoutError(),{"data":{"productOfferV2":{"nodes":[node()],"pageInfo":{"hasNextPage":False}}}}]
         self.assertEqual(len(fetch_offers(DEFAULTS)),1)
         self.assertEqual(request.call_count,2)
+    @patch("core.time.sleep")
+    @patch("core.request_json")
+    def test_page_retries_are_counted_and_respect_the_deadline(self,request,sleep):
+        credentials=dict(app_id="123",secret="secret")
+        request.side_effect=[TimeoutError(),{"data":{"productOfferV2":{"nodes":[node()],"pageInfo":{"hasNextPage":False}}}}]
+        stats={}
+        fetch_product_page(DEFAULTS,1,credentials,deadline=time.time()+100,stats=stats)
+        self.assertEqual(stats["http_attempts"],2)
+        self.assertLessEqual(request.call_args.kwargs["timeout"],25)
+        request.side_effect=[TimeoutError()]*3
+        with self.assertRaisesRegex(ValueError,"Prazo"):
+            fetch_product_page(DEFAULTS,1,credentials,deadline=time.time()+1.5)
+        self.assertEqual(sleep.call_count,1)  # the first retry's wait; none after the deadline
     @patch.dict(os.environ,{"SHOPEE_APP_ID":"123","SHOPEE_SECRET":"secret"})
     @patch("core.request_json")
     def test_bounded_product_search(self,request):
@@ -95,9 +109,10 @@ class EngineTest(unittest.TestCase):
         sleeper=patch("core.time.sleep")
         sleeper.start()
         self.addCleanup(sleeper.stop)
-        self.engine=Engine(self.store,fetcher=lambda _: [node(i) for i in range(1,7)],
+        self.engine=Engine(self.store,fetcher=lambda _: [node(i,imageUrl=f"https://down-br.img.susercontent.com/file/{i}") for i in range(1,7)],
                            searcher=lambda *args: [],runner=FakeRunner())
         self.store.save_telegram(dict(token="123456:"+("A"*30),chat_id="-1001234",thread_id="42"))
+        self.store.save_settings(dict(flow_project_url="https://flow.google.com/project/test"))
 
     def test_preview_does_not_send_and_history_persists(self):
         run_id=self.engine.collect()
@@ -105,23 +120,19 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(len(self.store.history("1:1")),1)
         self.assertEqual(Store(self.temp.name).runs()[0]["id"],run_id)
 
-    def test_topic_payload_and_duplicate_delivery_guard(self):
+    def test_send_reserves_videos_without_messages_and_never_twice(self):
         captured=[]
-        self.engine.sender=lambda url,body: captured.append(json.loads(body)) or {"ok":True,"result":{"message_id":10}}
+        self.engine.sender=lambda url,body,headers=None: captured.append(url) or {"ok":True,"result":{"message_id":10}}
         run_id=self.engine.collect()
-        self.engine.send(run_id)
-        # One message per product plus its prompt as a reply; every one goes to the topic.
-        self.assertEqual(len(captured),10)
-        self.assertTrue(all(c["message_thread_id"]==42 and c["chat_id"]=="-1001234" for c in captured))
-        self.assertTrue(all("reply_markup" not in c for c in captured))
-        self.assertEqual(captured[1]["reply_parameters"]["message_id"],10)
+        self.assertEqual(self.engine.send(run_id),5)
+        self.assertEqual(captured,[])  # each product goes out later, in one message with its video
+        self.assertEqual(self.store.run(run_id)["delivery"],"queued")
         self.assertEqual(len(self.store.exclusions()),5)
         with self.assertRaises(ValueError):
             self.engine.send(run_id)
-        self.assertEqual(len(captured),10)
+        self.assertEqual(len([v for v in self.store.run(run_id)["products"] if v.get("video")]),5)
 
     def test_two_previews_cannot_send_same_products(self):
-        self.engine.sender=lambda url,body: {"ok":True,"result":{"message_id":10}}
         first=self.engine.collect()
         second=self.engine.collect()
         self.engine.send(first)
@@ -129,7 +140,6 @@ class EngineTest(unittest.TestCase):
             self.engine.send(second)
 
     def test_old_sent_offers_never_return_to_selection(self):
-        self.engine.sender=lambda url,body: {"ok":True,"result":{"message_id":10}}
         first=self.engine.collect()
         sent={p["key"] for p in self.store.run(first)["products"] if p["selected"]}
         self.engine.send(first)
@@ -142,30 +152,13 @@ class EngineTest(unittest.TestCase):
         self.assertFalse(sent & found)
         self.assertEqual(len(found),1)
 
-    def test_uncertain_delivery_is_not_recommended_again(self):
-        self.engine.sender=lambda url,body: (_ for _ in ()).throw(TimeoutError())
-        first=self.engine.collect()
-        selected={p["key"] for p in self.store.run(first)["products"] if p["selected"]}
-        with self.assertRaises(ValueError):
-            self.engine.send(first)
-        # Only the product whose message timed out is uncertain; the others were never attempted.
-        uncertain={k for k,d in self.store.deliveries(first).items() if d["state"]=="unknown"}
-        self.assertEqual(len(uncertain),1)
-        second=self.engine.collect()
-        found={p["key"] for p in self.store.run(second)["products"]}
-        self.assertFalse(uncertain & found)
-        self.assertEqual(len((selected-uncertain) & found),4)
-
-    def test_unknown_delivery_never_retried(self):
-        def fail(url,body):
-            raise TimeoutError("timeout")
-        self.engine.sender=fail
-        run_id=self.engine.collect()
-        with self.assertRaises(ValueError):
-            self.engine.send(run_id)
-        self.assertEqual(self.store.run(run_id)["delivery"],"unknown")
-        with self.assertRaises(ValueError):
-            self.engine.send(run_id)
+    def test_scheduled_auto_send_marks_the_day_done_once_queued(self):
+        self.store.save_settings(dict(auto_send=True))
+        now=datetime(2026,10,10,13,0,tzinfo=TZ)
+        self.engine.tick(now)
+        with self.store.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM schedule").fetchone()[0],"done")
+        self.assertEqual(self.store.runs()[0]["delivery"],"queued")
 
     def test_telegram_token_not_returned(self):
         self.assertNotIn("token",self.store.telegram_public())
@@ -175,13 +168,12 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(self.store.telegram()["thread_id"],"")
 
     def test_discarded_not_sent(self):
-        captured=[]
-        self.engine.sender=lambda u,b: captured.append(json.loads(b)) or {"ok":True,"result":{"message_id":1}}
         run_id=self.engine.collect()
         selected=next(p for p in self.store.run(run_id)["products"] if p["selected"])
         self.store.decision(selected["key"],"discarded")
         self.engine.send(run_id)
-        self.assertFalse(any(selected["link"] in c["text"] for c in captured))
+        self.assertNotIn(selected["key"],self.store.deliveries(run_id))
+        self.assertIsNone(next(p for p in self.store.run(run_id)["products"] if p["key"]==selected["key"])["video"])
 
     def test_schedule_restarts_and_catches_up_once(self):
         now=datetime(2026,10,10,13,0,tzinfo=TZ)

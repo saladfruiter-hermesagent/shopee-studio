@@ -1,139 +1,107 @@
-# Plano — Shopee Studio: anúncios equivalentes, conteúdo e vídeo
+# Plano — Shopee Studio: melhorias pendentes
 
-Atualizado em 2026-10-31. Status: PR 1 (conteúdo, links equivalentes, LLM com fallbacks, Telegram novo) mergeado (#13) e em produção. PR 2 (worker do Flow, legenda e envio do vídeo) implementado na branch `feat/flow-video`. Veja **Andamento** no fim.
+## Estado e objetivo
 
-## Objetivo e decisões
+Este documento contém apenas o trabalho pendente e o andamento das melhorias em curso. O plano antigo, as etapas executadas e os registros de implantação foram retirados a pedido do usuário. O comportamento implementado está descrito no `README.md`.
 
-- Manter seleção dos cinco produtos principais e regras existentes de filtros/histórico.
-- Buscar anúncios do mesmo produto para vincular ao mesmo vídeo: entregar até **6 links no total por produto** (o anúncio selecionado + até 5 equivalentes idênticos validados) em uma lista única, sem fazer distinção visual entre "principal" e "equivalente".
-- Não confundir semelhante com idêntico. Comparar imagens E atributos (marca/modelo, variante/cor, tamanho/capacidade, acessórios e quantidade do kit). Fotos iguais podem ser reutilizadas em anúncios diferentes.
-- Classificar candidatos como correspondência sustentada por evidências, incerto ou incompatível; explicar motivos. Não preencher vagas com itens apenas parecidos. Elegibilidade e comissão do canal Vídeo precisam de validação separada.
-- Remover título de vídeo separado; usuário não usa. Manter nome do produto apenas como identificação.
-- Telegram: por produto, uma mensagem com foto (imagem original do anúncio baixada pelo painel e enviada como foto), nome, preço/comissão, legenda num bloco `<pre>` copiável e os links numerados. O prompt chega num segundo bloco `<pre>`, como resposta à mensagem da foto. Sem botões de cópia. Se a legenda da foto passar de 1.024 caracteres, os links vão para a resposta. Se a foto for recusada, a mensagem sai só em texto, com aviso no histórico. Falta conferir a cópia dos blocos no cliente Telegram do usuário.
-- A imagem é a original do anúncio (`imageUrl` da API, ~1000 px). Nunca uma imagem gerada por IA. O print do anúncio para conferência não foi implementado, porque exigiria um navegador no painel. Ele pode entrar no PR 2, pelo worker.
-- Criar prompt de venda específico ao produto: gancho, demonstração, benefício e CTA dentro da plataforma. Preservar aparência do produto, sem inventar atributos, descontos, escassez, depoimentos ou acessórios.
-- **Legenda da dublagem (subtitles):** gerar legenda sincronizada para a fala/narração do vídeo (para converter quem assiste sem áudio ligado). O Google Flow gera o vídeo limpo (sem textos renderizados pela IA de vídeo para evitar erros de grafia em português) e o pós-processamento local na VM (`ffmpeg` + alinhamento/transcrição do áudio ou roteiro da fala) aplica a legenda estilizada no `.mp4` antes do envio ao Telegram.
-- Duração corrigida pelo usuário para 10 segundos. Modelo usado e aprovado no teste: Omni 1.1 Flash. Vídeo vertical 9:16; teste em 720p e uma versão.
-- **LLM de visão/texto (padrão + fallbacks configuráveis):**
-  - **Padrão de fábrica (Antigravity CLI `agy`):** principal `gemini-3.8-flash-medium`, fallback `gemini-4-argon-medium`. O worker da VM executa o agy e lê as imagens numa pasta temporária com `--add-dir <pasta>`, `--output-format json` e `--json-schema`. Ele roda **sem** `--dangerously-skip-permissions`. Teste de 2026-10-31: com essa opção, o agy executou um comando fora da pasta mesmo com `--sandbox`. Sem ela, o modo headless nega o terminal, e a leitura de imagem continua funcionando. Os títulos dos anúncios são texto de terceiros, então rodar sem essa opção evita injeção de comandos.
-  - **Alteração de modelo e Fallbacks na UI:** permitir na página de configuração alterar o modelo principal e configurar uma cadeia de **fallbacks** (outros modelos do `agy`, como `gemini-4-argon` / `claude-sonnet-5-5`, ou endpoints OpenAI-compatíveis / OpenRouter com endpoint, API key protegida, modelo visual e modelo de texto opcional), além de botão de teste real de visão, orçamento de candidatos, timeout e retries. Não presumir que a conexão Antigravity de chat gera vídeos.
+**Escopo confirmado:** melhorar a busca de anúncios equivalentes e simplificar a entrega no Telegram para uma única mensagem por produto, com vídeo, descrição e links. O usuário pediu as três entregas num PR só e confirmou os limites propostos do piloto.
 
-## Descrição e hashtags
+**Situação:** as Entregas 1, 2 e 3 estão implementadas na branch `feat/busca-progressiva-video-unico` (PR #15), com testes automatizados. A comparação real da execução #29 foi feita (resultado abaixo). Faltam a conferência do usuário no `pc1` e no Telegram de teste, a decisão sobre a etapa condicionada, o merge e o deploy.
 
-Antes: `social_copy` em `core.py` criava título, descrição genérica e hashtags fixas, e cortava em 256 caracteres. Foi substituída por `content.py` + `analysis.py` (PR 1).
+## Regra de equivalência (definida pelo usuário em 31/10/2026)
 
-Regras implementadas:
-1. Extrair benefício verificável e contexto de uso, sem repetir nome longo do anúncio.
-2. Escolher hashtag específica do produto e hashtag do uso/contexto; terceira apenas quando útil e couber. Isso é decisão editorial, não regra da plataforma.
-3. Reservar espaço das tags/separadores antes de finalizar a frase.
-4. Contar descrição + hashtags + espaços/pontuação por código; conferir Unicode com o aplicativo. Evitar emojis por padrão.
-5. Reescrever excessos, não truncar frases/tags ou acrescentar reticências. Exibir contagem fora do bloco copiável.
-6. Não usar #Shopee/#Achadinhos/#Viral/#Fyp automaticamente, nem palavras soltas do anúncio.
+Não precisa ser completamente igual: basta ser o mesmo produto na comparação por foto. Bem semelhante é aceito.
+- Outro ângulo, fundo, iluminação, foto de outro vendedor ou pequenas diferenças de apresentação não impedem a aprovação. Falta de marca, voltagem ou modelo no título também não.
+- Fica de fora o que, na foto, é outro produto (formato, design, cor ou componentes) e o que o título informa com medida, capacidade, voltagem ou quantidade de kit diferente da informada pelo principal. Esse conflito de medidas também é conferido no código, mesmo quando o modelo aprova.
+- Incerto fica só para foto que não permite comparar. Incertos continuam fora dos links.
+- Substitui a regra anterior ("foto igual não prova identidade; não inferir marca, voltagem ou variante ausente").
 
-Limite definido pelo usuário: **150 caracteres** no conjunto completo (descrição + hashtags).
+## 1. Resultado da comparação real (execução #29, 31/10/2026)
 
-Fontes consultadas:
-- https://plugg.to/shopee-video-pluggto — legenda até 150 caracteres no painel da integração.
-- https://shopee.com.br/blog/shopee-video-o-que-e-como-usar — recomenda legenda atrativa e hashtags relevantes, sem teto explícito na página consultada.
+### Com a regra por foto (vigente)
 
-## Dependências de dados
+| Produto | Ao modelo | Avaliação do modelo | Links | Encerrou | Tempo |
+|---|---|---|---|---|---|
+| Bicicleta ergométrica 120kg | 8 | 8 mesmo produto | 6 | 5 equivalentes aprovados (1 rodada) | 64 s |
+| Kit 20 potes 2,3L/1,1L/480ml | 11 | 4 mesmo produto · 7 diferentes (kits de 10, outros potes) | 5 | resultados esgotados (2 rodadas) | 143 s |
+| Serra mármore Bosch GDC 150 | 8 | 8 mesmo produto (inclui anúncios 127V e 220V; o principal não informa voltagem) | 6 | 5 equivalentes aprovados (1 rodada) | 62 s |
+| Espelho orgânico 170x70 | 24 | 2 mesmo produto · 22 diferentes (outro recorte, moldura ou sem LED) | 3 | orçamento de candidatos (3 rodadas) | 254 s |
+| Kit calças jeans skinny | 24 | 2 mesmo produto (kit 3 skinny) · 22 diferentes (slim, outras lavagens, zíper) | 3 | orçamento de candidatos (3 rodadas) | 272 s |
 
-`productOfferV2` aceita keyword e `sortType: 1` (relevância). Desde o PR 1, a consulta coleta `imageUrl` e `productLink`. Validado em 2026-10-31 com a API real: imagens em `cf.shopee.com.br`, ~1000 px. A API não traz especificações nem variantes, então a comparação usa uma imagem + título por anúncio. A busca real por equivalentes trouxe de 1 a 50 resultados por produto.
+- **18 links novos** nos 5 produtos (antes: 0). Total de cerca de 13 minutos para os 5. Os aprovados precisam da revisão visual do usuário.
+- Risco aceito com a regra: um link pode levar a uma variante não informada no título (ex.: serra 127V × 220V quando o principal não diz a voltagem).
 
-## Teste concluído — Flow pelo Hermes Desktop
+### Com a regra anterior (identidade estrita)
 
-- Navegador inicial de browser_exec era sessão separada, não visível ao usuário. Login concluído depois no painel desktop_preview; controle via drive_preview.
-- Criado projeto separado: https://flow.google.com/project/de481422-1c45-4983-b85b-67540319a3f5
-- Nome mostrado: `out. 30 - 18:40`.
-- Referência escolhida do projeto existente `Anuncios`: `White wireless earbuds in case`. A escolha não alterou o projeto de origem.
-- Configuração: Omni 1.1 Flash, 10s, vertical 9:16, 720p, uma versão.
-- Custo exibido: 15 créditos (8s mostrava 12). Usuário confirmou explicitamente 15 créditos.
-- Uma geração foi enviada; acompanhado progresso até aparecer cartão reproduzível `Creating vertical product advert…`.
-- Usuário assistiu e afirmou: “funcionou bem”.
-- Download não foi validado. Agente não fez revisão visual/áudio própria. Não afirmar que pipeline completo ou operação autônoma já foi provado.
-- Plugin instalado antigravity-subscription-directsdk opera chat_completions via agy, não expõe geração Flow direta.
 
-## Arquitetura proposta para execução sem PC
+Páginas reais da API gravadas em `scripts/fixtures/run29.json`, sem credenciais e sem links de afiliado. Sem exclusões de histórico. Modelo: agy Gemini 3.8 Flash na VM, cadeia padrão.
 
-Processo/worker na VM com navegador e perfil persistente próprios, independente do Hermes Desktop. Agendamento → seleção → evidências/validação → copy/prompt → upload no Flow → geração → download → legendagem da dublagem (`ffmpeg`) → Telegram.
+| Produto | Busca antiga → ao modelo | Busca nova → ao modelo (inéditos) | Modelo (nova) | Encerrou | Tempo |
+|---|---|---|---|---|---|
+| Bicicleta ergométrica 120kg | 46 elegíveis → 8 | 67 elegíveis → 24 (16) | 0 mesmo produto · 16 incertos · 8 diferentes | orçamento de candidatos | 424 s |
+| Kit 20 potes 2,3L/1,1L/480ml | 5 → 5 | 11 → 11 (7) | 0 · 2 · 9 | resultados esgotados | 367 s |
+| Serra mármore Bosch GDC 150 | 10 → 8 | 28 → 24 (17) | 0 · 18 · 6 | prazo, na 3ª rodada | 601 s |
+| Espelho orgânico 170x70 | 37 → 8 | 76 → 24 (24) | 0 · 0 · 24 | orçamento de candidatos | 267 s |
+| Kit calças jeans skinny | 0 → 0 | 26 → 24 (24) | 0 · 0 · 24 | orçamento de candidatos | 203 s |
 
-Requisitos operacionais:
-- Fila persistente e estado por geração.
-- Não reenviar geração após timeout sem reconciliar a anterior, para evitar crédito duplicado.
-- Orçamento/limite de créditos e confirmação de custo inesperado.
-- Pausar e alertar em login expirado/2FA/CAPTCHA; intervenção humana, nunca contornar desafio.
-- Não copiar sessão do PC por suposição. Autenticar o navegador da VM diretamente.
-- Testar perfil após reinício, upload de arquivo da VM, geração/download e execução com Desktop fechado.
-- Tela virtual na VM é opção para navegador com janela; PC serve somente de visualizador para login/manutenção.
+- **Cobertura:** a busca nova levou ao modelo 107 candidatos contra 29, 88 deles fora da busca antiga. Os títulos ficaram muito mais próximos (bicicleta, potes e serra trouxeram anúncios com o título idêntico ou com as mesmas medidas).
+- **Aprovados (regra estrita):** nenhum link novo. O modelo marcou como incertos até os anúncios de título idêntico ao principal (bicicleta, potes, serra). Os motivos individuais desta comparação não foram gravados (o script passou a gravá-los depois); em #29, os incertos foram justificados por marca, voltagem ou variante não confirmadas. Pelos títulos, os espelhos e as calças comparados têm outro modelo, medida ou kit. O gargalo era a evidência exigida, não a busca; a regra por foto resolveu isso sem depender da etapa condicionada da seção 4.
+- **Tempo:** 3,4 a 10 minutos por produto (cerca de 60 a 100 s por rodada). Com 5 produtos, a análise diária passa de ~6 para ~25 minutos. A serra esgotou o prazo de 10 minutos na 3ª rodada; o painel agora registra isso como "prazo".
+- Na primeira execução do `--evaluate`, dois produtos falharam porque o worker embutido no script não mandava heartbeat durante tarefas longas. O script foi corrigido e os dois foram repetidos; o painel não tem esse problema (o worker real tem heartbeat próprio).
 
-## TESTE CONCLUÍDO — navegador independente na VM (`hermes`)
+## 2. Pendências antes do merge
 
-Host confirmado: `hermes`, Linux. Chromium Playwright em `/home/hermes/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`; Playwright, Xvfb e `ffprobe`/`ffmpeg` disponíveis.
+1. **Revisão visual dos 18 aprovados** pelo usuário (fotos lado a lado do principal e de cada aprovado).
+2. **Teste do usuário no painel isolado** (`http://192.168.1.250:8792`, dados fictícios de #29, sem worker): conferir os estados dos cards, o diagnóstico da busca, a prévia e os limites em Preferências.
+3. **Telegram real em destino de teste autorizado:** o usuário configura o bot e um chat/tópico de teste no painel isolado e toca em **Reenviar vídeo** no card do espelho. Deve chegar uma única mensagem: o vídeo já existente, com nome, descrição copiável e os links numerados. Conferir a cópia da descrição e a abertura de todos os links. Não gasta créditos do Flow.
+4. **Merge e deploy** só com autorização explícita. Antes do deploy no TheVault: diagnóstico atual, confirmar que não há vídeos em andamento (jobs antigos com foto continuam como resposta à foto), backup do SQLite, tag de rollback e janela fora do horário das 12:00.
 
-Ambiente isolado de teste em `/home/hermes/.local/share/flow-vm-test` (modo 700, sem alterar código/configuração do Shopee Studio):
-- `runtime`: pacotes `x11vnc`, `libvncserver1`, `libvncclient1` e `novnc` extraídos em espaço de usuário.
-- `web-venv`: `websockify` para proxy noVNC.
-- `profile`: perfil persistente dedicado do Chromium na VM.
-- `downloads`: diretório de saída validado para arquivos baixados via CDP.
+## 3. Critérios de aceite ainda não verificados com dados reais
 
-### Diagnóstico de `sudo` / sandbox e decisão do usuário
-- Verificado com `passwd -S hermes` (`hermes L 2026-08-21 0 99999 7 -1`) que a conta `hermes` na VM foi criada apenas com chave SSH (senha bloqueada) e sem regra `NOPASSWD` em `/etc/sudoers.d/`.
-- Usuário autorizou iniciar o Chromium dedicado na VM com `--no-sandbox` restrito ao perfil exclusivo `/home/hermes/.local/share/flow-vm-test/profile`.
+- Kit diferente e formato diferente: na comparação real com a regra por foto, kits de 10 potes, calças slim e espelhos de outro recorte saíram como diferentes. Medida conflitante nos dois títulos é rejeitada pelo código (testado).
+- Mensagem única recebida no cliente Telegram do usuário, com a descrição copiável e todos os links abrindo.
 
-### Etapas validadas em 2026-10-30
-1. **Login via túnel reverso seguro (`OK`):** `Xvfb :95` + `x11vnc` (`127.0.0.1:5905`) + `noVNC` (`127.0.0.1:6085`) + túnel reverso SSH para `pc1-lan`. Usuário concluiu login na conta Google (`PRO`) diretamente no navegador da VM.
-2. **Persistência de sessão após reinício (`OK`):** Chromium encerrado com `SIGTERM` e reiniciado em novo processo apontando para `/home/hermes/.local/share/flow-vm-test/profile`; reabriu autenticado diretamente nos projetos do Google Flow.
-3. **Upload real de arquivo a partir do disco da VM (`OK`):** Imagem `/home/hermes/.local/share/flow-vm-test/downloads/white_earbuds_vm_upload_test.png` (35 KB) enviada via `expect_file_chooser` (`Adicionar elementos à caixa de comando` → `Enviar mídia` → `Incluir no comando`), gerando novo chip de referência no prompt.
-4. **Nova geração completa na VM (`OK`):** Configurado e confirmado pelo usuário o consumo de **15 créditos** (`Omni 1.1 Flash`, `10s`, vertical `9:16`, `720p`, `1 versão`). Fluxo de confirmação do agente do Flow (`Aprovar`) acionado via CDP e geração concluída em ~45s (`Creating vertical product video …`).
-5. **Download real via CDP (`OK`):** Configurado `Browser.setDownloadBehavior` para `/home/hermes/.local/share/flow-vm-test/downloads` e acionado `Mais opções` → `Fazer o download` → `720p Tamanho original`. Ambos os vídeos (o do teste anterior `Creating_vertical_product_advert…_ca4023e3.mp4` de 2,9 MB e o da nova geração na VM `Creating_vertical_product_video_…_f320fa55.mp4` de 2,8 MB) foram salvos e verificados no disco da VM.
-6. **Encerramento limpo (`OK`):** Processos de teste (`Chromium`, `x11vnc`, `websockify`, `Xvfb` e túnel SSH) encerrados após o teste, preservando `/home/hermes/.local/share/flow-vm-test/profile` e `downloads` prontos para automação futura.
+## 4. Detalhes adicionais dos anúncios — etapa condicionada
+
+Com a regra por foto, esta etapa deixou de ser necessária por enquanto. Se o piloto voltar a ficar limitado por falta de voltagem, composição ou variante, investigar uma fonte acessível de detalhes do anúncio. O fluxo atual compara título e imagem; não presumir que especificações e variantes estejam disponíveis na consulta usada. Validar uma fonte real antes de integrar, registrar origem dos atributos e manter incerto quando não houver confirmação. Não contornar login/CAPTCHA nem tratar conteúdo do anúncio como instruções. Essa etapa depende dos resultados do piloto.
+
+## 5. Riscos
+
+- Mais consultas e rodadas aumentam latência e uso de quota. A busca não garante seis links; os critérios de identidade continuam.
+- O envio depende do vídeo pronto: falha de geração, teto atingido ou vídeo desligado deixam produtos sem entrega até intervenção, com o motivo visível no card (política confirmada pelo usuário).
+- Não alterar teto de créditos, segurança do worker, prevenção de geração duplicada ou fluxo de login/2FA/CAPTCHA.
+- Arquivos não rastreados fora do escopo: `daily_shopee_top5.ps1`, `docker-schedule.sh`, `get_telegram_chat_id.ps1`, `install_daily_task.ps1`.
 
 ## Andamento
 
-### PR 1 — conteúdo, links equivalentes, LLM, Telegram (#13, em produção)
+Branch `feat/busca-progressiva-video-unico`. Testes: `python -m unittest discover -s tests -v`.
 
 | # | Pedido | Como ficou | Estado |
 |---|---|---|---|
-| 1 | Até 6 links por produto, sem distinguir principal | `analysis.py`: busca por relevância com as 6 primeiras palavras do nome (1 página, 50 itens). Pré-filtro: preço entre 0,5x e 2x, similaridade de título ≥ 0,25, com imagem. O modelo classifica até N candidatos (padrão 8) como match, uncertain ou incompatible, com motivo. Só match vira link, até 5 + o selecionado | feito, testado com dados reais |
-| 2 | Não confundir semelhante com idêntico | Prompt exige imagem E atributos e diz que foto igual não prova nada. Candidato não avaliado = incerto. Sem imagem do principal, nenhum match. Teste real: bicicleta 24V × 21V e guarda-roupas de outra cor ou modelo saíram como incompatíveis; omeleteira idêntica de 8 lojas, como match | feito |
-| 3 | Remover título | removido (`social_copy`, botões e título) | feito |
-| 4 | Legenda + hashtags ≤ 150, sem truncar | `content.copy_problems` valida tudo (UTF-16, 2 ou 3 tags, proibidas, emoji, reticências, preço/desconto/frete/urgência). Resposta inválida volta ao modelo com os problemas listados | feito |
-| 5 | Prompt específico, 10 s | O modelo devolve gancho, demonstração, benefício, chamada e narração (≤ 25 palavras). `content.video_prompt` monta o prompt com regras fixas: preservar o produto, sem texto na tela, sem preço | feito |
-| 6 | LLM configurável + fallbacks + teste | Preferências → Modelo de visão e texto: até 6 modelos (agy ou OpenAI-compatível), ordem, ativo, chave protegida, modelo de texto, timeout, tentativas, orçamento de candidatos. Testar visão manda um PNG vermelho e exige a cor certa | feito, agy validado na VM |
-| 7 | Telegram novo | Mensagem com foto por produto + prompt em resposta. Entrega por produto (`deliveries`): incerto só exclui o produto afetado. Recusa definitiva sem nada enviado volta para "não enviado" | feito, falta teste no Telegram real |
-| 8 | Execução sem PC | Worker na VM (`worker/`) por polling com token, tarefas com prazo, heartbeat. Offline = agy pulado na hora | feito, serviço systemd ativo na VM |
+| E1.1 | Termos de busca sem perder medidas, decimais e kit | `analysis.search_terms`/`search_queries`: `2,3litros`, `1,1litro`, `170x70cm`, `GDC 150`, `kit 20`, `5.0`, `i12` preservados; `content.name_tokens` intacto | feito, testado |
+| E1.2 | Até 3 consultas únicas | identidade + atributos; mesma medida com outra grafia (`2,3l`, `170x70`); ampla (kit + 3 palavras, sem comerciais/secundárias) | feito, testado |
+| E1.3 | Coleta limitada, paginação, deduplicação, exclusões, falhas parciais | `analysis.CandidatePool`: páginas 1 de todas as consultas antes das 2; nova página só se o lote ficar curto; até 2 páginas e 6 buscas; motivos de descarte exclusivos (contagens fecham); consulta que falha não para as outras; prazo global | feito, testado |
+| E1.4 | Ordenação por atributos e diversidade | quem mantém medidas primeiro, medida conflitante (127V × 220V) por último, alternando consultas no mesmo nível | feito, testado |
+| E1.5 | Comparador antigo × novo | `scripts/compare_equivalent_search.py`: fixtures por padrão, `--live` com gravação sanitizada, `--evaluate` com agy local; sem `Engine.collect`, banco de produção, Telegram ou Flow | feito; execução real em 31/10 (seção 1) |
+| E2.1 | Avaliação em rodadas | lotes de 8, até 3 rodadas e 24 candidatos; IDs C1… mapeados por lote; para em 5 aprovados | feito, testado |
+| E2.2 | Conteúdo uma vez; falhas posteriores preservam aprovados | 1ª rodada escreve legenda/roteiro; as seguintes usam prompt e schema só de equivalência; rodada com falha deixa o lote como incerto | feito, testado |
+| E2.3 | Prazo e orçamento globais | 10 min por produto aplicados à busca, às chamadas do modelo, novas tentativas e fallbacks; não reinicia por rodada | feito, testado |
+| E2.4 | Diagnóstico persistido | `analysis.search`: consultas/páginas, brutos/únicos/repetidos, descartes por motivo, rodadas, chamadas e novas tentativas HTTP, motivo de encerramento, duração | feito, testado |
+| E2.5 | Painel | resumo visível no card + detalhes expansíveis (teclado, celular); seção "Busca de equivalentes" no "Por que entrou?"; limites recolhidos em Preferências | feito; conferido no navegador (desktop e 390 px) |
+| E3.1 | Uma mensagem por produto | `send` só reserva vídeos; `sendVideo` único com nome, descrição `<pre>` e links numerados; nenhuma foto, nenhum prompt separado | feito, testado |
+| E3.2 | Retrato da mensagem | legenda e links congelados em `deliveries.snapshot`/`videos.snapshot`; "Gerar vídeo ↻" reutiliza o mesmo retrato | feito, testado |
+| E3.3 | Limite da legenda | 1.024 caracteres após o HTML (Bot API conferida); encurta o nome; se não couber, bloqueia o produto com motivo, sem cortar links | feito, testado |
+| E3.4 | Estados e idempotência | entrega por produto: aguardando vídeo, entregue, não entregue, recusado (Reenviar sem créditos), não confirmado (sem repetição), bloqueado; consulta: Aguardando vídeos / Confirmado / Parcial; reservados excluídos de novas consultas | feito, testado |
+| E3.5 | Compatibilidade | migração só aditiva (colunas novas); histórico antigo legível; jobs antigos sem retrato continuam respondendo à foto | feito, testado |
+| E3.6 | Teste real no Telegram | painel isolado com vídeo pronto já existente | pendente (seção 2) |
 
-Decisões tomadas sem perguntar:
-- Fallback padrão `gemini-4-argon-medium` (agy), para a cadeia já vir com dois modelos sem custo extra.
-- Equivalentes enviados também ficam excluídos das próximas consultas (evita outro vídeo do mesmo produto).
-- Se todos os modelos falharem: o produto sai com o próprio link e um texto automático, marcado como "sem validação do modelo" no painel e no Telegram. Ele não bloqueia o envio diário.
-- O painel baixa a imagem e envia por upload. Se o download falhar, o Telegram busca a URL. Se a foto for recusada, a mensagem sai só em texto.
-- Erro 4xx de endpoint OpenAI-compatível (chave/modelo) pula direto para o próximo modelo, sem novas tentativas.
+### Decisões tomadas sem perguntar
 
-### PR 2 — Flow + legenda + vídeo (branch `feat/flow-video`)
+- Com a regra por foto, medida, capacidade, voltagem ou kit informados de forma diferente nos dois títulos continuam rejeitando (no modelo e no código). Valor ausente em um dos lados não conta como diferença.
 
-Decisões do usuário: o worker na VM gera o vídeo automaticamente para os produtos enviados, com teto diário de créditos configurável (padrão 75) e pausa se o custo exibido divergir. O vídeo legendado chega como resposta à mensagem do produto (`deliveries.photo_message_id`). A legenda vem de transcrição com faster-whisper local (modelo small, CPU), e o texto do roteiro (`analysis.narration`) só corrige a grafia. Testes com até 2 gerações (30 créditos) autorizados; foi usada 1.
-
-| # | Pedido | Como ficou | Estado |
-|---|---|---|---|
-| 1 | Vídeo automático após o envio | `video.py`: cada produto confirmado no Telegram vira um job (`videos`) e uma tarefa `video` para o worker, com o custo reservado | feito |
-| 2 | Teto diário de créditos | Soma de `videos.credits` do dia (horário de Brasília). Reserva o custo na fila, libera em falha antes da aprovação e mantém em falha depois dela. Teto atingido = produto sem vídeo, com o motivo | feito |
-| 3 | Pausa se o custo divergir | O worker lê o custo no cartão do agente do Flow (`flow-permission-message`) e só escolhe "Aprovar" se for o esperado para 1 geração. Se não for, escolhe Rejeitar, a fila pausa e chega um alerta no Telegram | feito, testado sem gastar (Rejeitar) |
-| 4 | Não reenviar geração sem reconciliar | A etapa `approving` é registrada no painel antes do clique. Falha ou prazo vencido depois disso = "incerto", sem nova geração automática | feito |
-| 5 | Login/2FA/CAPTCHA | Detectados → pausa + alerta. `worker/flow_login.sh` abre o perfil por noVNC no PC via túnel reverso | feito; o script não foi exercitado com login real |
-| 6 | Legenda da dublagem | `worker/subtitles.py`: faster-whisper small (int8, ~10 s, ~600 MB), alinhamento com o roteiro (difflib), blocos de até 4 palavras sem palavra órfã, ASS branco com contorno a 17% da base, ffmpeg libx264 | feito |
-| 7 | Vídeo como resposta no Telegram | `sendVideo` multipart com `reply_parameters` da foto do produto. Recusa = "envio falhou" com o arquivo guardado e botão Reenviar; incerto não repete | feito; Telegram real só em produção |
-| 8 | Painel | Card com estado do vídeo, "Gerar vídeo ↻" e "Reenviar vídeo". Preferências → Vídeo no Google Flow: liga/desliga, teto, custo, modelo, URL do projeto, uso do dia e Retomar | feito |
-
-Teste real de 31/10, no projeto "out. 30 - 18:40" com Telegram simulado: um produto real (comedouro Jelplast). Foram 109 s do início ao vídeo legendado: confirmação em 42 s, geração e download em ~65 s, legenda em ~10 s. O custo lido e aprovado foi de 15 créditos. O resultado foi 720x1280, 10 s, com 7 blocos de legenda. A narração gerada pelo Flow repetiu palavras ("e ração e ração", "no ponto, no ponto"). A legenda reproduz o que foi falado, e a transcrição confirmou as repetições com alta confiança.
-
-Decisões tomadas sem perguntar:
-- Projeto do Flow configurável (`flow_project_url`); em produção, o de teste "out. 30 - 18:40". Uma sessão nova do agente por vídeo.
-- O worker ajusta sozinho "Confirmar antes de gerar = Sempre", 9:16 e x1. Se o modelo padrão de vídeo for outro, a fila pausa em vez de trocar o modelo.
-- Perfil do Flow com o caminho atual (`~/.local/share/flow-vm-test/profile`), sem mover.
-- Legenda a 17% da base, para sair da área do card de produto da Shopee. Ela ainda pode cobrir a base do produto em planos abertos.
-- "browser_busy" (perfil em uso, ex.: login em andamento) gera até 3 tentativas. Os demais erros não repetem sozinhos.
-
-## Estado do repositório
-
-Arquivos não rastreados, não tocar por engano: daily_shopee_top5.ps1, docker-schedule.sh, get_telegram_chat_id.ps1, install_daily_task.ps1.
+- `candidate_budget` continua sendo o tamanho do lote (8; 0 desliga a busca). O total de 24 é um campo novo (`candidate_total`), assim como consultas, páginas, buscas, rodadas e prazo; todos ficam em Preferências → Limites da busca.
+- Produto aguardando vídeo fica reservado (excluído de novas consultas). Produto com falha antes do Telegram volta a ser elegível; se outra consulta já o enviou, "Gerar vídeo ↻" é recusado.
+- Vídeo recusado pelo Telegram mantém o produto reservado enquanto o arquivo espera o "Reenviar vídeo".
+- Pausa da fila, teto atingido e vídeo desligado deixam o produto "não entregue" (com "Gerar vídeo ↻"), não pendente.
+- A prévia de uma consulta já enviada mostra a mensagem congelada e o estado de cada produto.
+- Fallback do modelo continua entregando o texto automático, agora com o aviso dentro da legenda do vídeo.

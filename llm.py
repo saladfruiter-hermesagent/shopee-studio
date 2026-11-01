@@ -15,7 +15,11 @@ AGY_MODELS = ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-fla
               "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high",
               "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high",
               "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high", "gpt-oss-120b-medium"]
-LLM_DEFAULTS = dict(timeout=180, retries=1, candidate_budget=8, providers=[
+# candidate_budget is the batch size of each model call (0 disables the search); candidate_total caps all rounds.
+SEARCH_LIMITS = (("candidate_budget", 0, 15), ("candidate_total", 1, 60), ("search_queries", 1, 3), ("search_pages", 1, 3),
+                 ("search_calls", 1, 9), ("equivalence_rounds", 1, 5), ("search_deadline", 60, 1800))
+LLM_DEFAULTS = dict(timeout=180, retries=1, candidate_budget=8, candidate_total=24, search_queries=3, search_pages=2,
+                    search_calls=6, equivalence_rounds=3, search_deadline=600, providers=[
     dict(id="agy-flash", type="agy", label="Antigravity · Gemini 3.8 Flash", model="gemini-3.8-flash-medium",
          endpoint="", api_key="", text_model="", enabled=True),
     dict(id="agy-argon", type="agy", label="Antigravity · Gemini 4 Argon", model="gemini-4-argon-medium",
@@ -23,6 +27,7 @@ LLM_DEFAULTS = dict(timeout=180, retries=1, candidate_budget=8, providers=[
 ])
 MODEL_NAME = re.compile(r"[A-Za-z0-9._:/@+-]{1,120}")
 WORKER_ONLINE_SECONDS = 90
+MIN_CALL_SECONDS = 30  # Below this, a model call cannot finish: stop instead of starting it.
 IMAGE_HOSTS = ("susercontent.com", "shopee.com.br", "shopee.com", "img.shopee")
 IMAGE_LIMIT = 6 * 1024 * 1024
 
@@ -33,10 +38,10 @@ class ModelError(Exception):
 
 def validate_llm(payload, existing=None):
     existing = existing or LLM_DEFAULTS
-    if not isinstance(payload, dict) or set(payload) - {"timeout", "retries", "candidate_budget", "providers"}:
+    if not isinstance(payload, dict) or set(payload) - set(LLM_DEFAULTS):
         raise ValueError("Configuração de modelo inválida.")
     result = {key: payload.get(key, existing.get(key, LLM_DEFAULTS[key])) for key in LLM_DEFAULTS}
-    for key, low, high in (("timeout", 30, 900), ("retries", 0, 3), ("candidate_budget", 0, 15)):
+    for key, low, high in (("timeout", 30, 900), ("retries", 0, 3), *SEARCH_LIMITS):
         value = result[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value or not low <= value <= high:
             raise ValueError(f"{key}: use um inteiro de {low} a {high}.")
@@ -141,15 +146,23 @@ class Runner:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
 
-    def run(self, prompt, schema, images, check, log=None):
-        """Return (output, provider_label, attempts). Raises ModelError when the whole chain fails."""
+    def run(self, prompt, schema, images, check, log=None, deadline=None):
+        """Return (output, provider_label, attempts). Raises ModelError when the whole chain fails.
+        `deadline` (epoch seconds) bounds every attempt, retry and fallback; it is never extended."""
         config = self.store.llm()
         attempts = []
         for provider in [p for p in config["providers"] if p["enabled"]]:
             feedback = ""
             for attempt in range(config["retries"] + 1):
+                timeout = config["timeout"]
+                if deadline is not None:
+                    left = int(deadline - time.time())
+                    if left < MIN_CALL_SECONDS:
+                        attempts.append("prazo da análise esgotado; nenhuma nova chamada")
+                        raise ModelError("Prazo da análise esgotado: " + " | ".join(attempts)[:900])
+                    timeout = min(timeout, left)
                 try:
-                    output = self.call(provider, prompt + feedback, schema, images, config["timeout"])
+                    output = self.call(provider, prompt + feedback, schema, images, timeout, deadline)
                     problems = check(output)
                     if not problems:
                         attempts.append(f"{provider['label']}: ok")
@@ -166,9 +179,9 @@ class Runner:
                     log(attempts[-1])
         raise ModelError("Todos os modelos falharam: " + " | ".join(attempts)[:900])
 
-    def call(self, provider, prompt, schema, images, timeout):
+    def call(self, provider, prompt, schema, images, timeout, deadline=None):
         if provider["type"] == "agy":
-            return self.call_worker(provider, prompt, schema, images, timeout)
+            return self.call_worker(provider, prompt, schema, images, timeout, deadline)
         return self.call_openai(provider, prompt, images, timeout)
 
     def call_openai(self, provider, prompt, images, timeout):
@@ -201,13 +214,14 @@ class Runner:
             text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
         return extract_json(text)
 
-    def call_worker(self, provider, prompt, schema, images, timeout):
+    def call_worker(self, provider, prompt, schema, images, timeout, deadline=None):
         if not self.store.worker_online():
             raise WorkerOffline("worker da VM offline; pulando para o próximo modelo")
         task_id = self.store.create_task("llm", dict(model=provider["model"], prompt=prompt, schema=schema,
                                                        images=images, timeout=timeout), deadline=timeout + 120)
-        deadline = time.time() + timeout + 120
-        while time.time() < deadline:
+        # Queue and agy start-up get 120 s on top of the call timeout, but never past the analysis deadline.
+        limit = time.time() + timeout + 120 if deadline is None else min(time.time() + timeout + 120, deadline)
+        while time.time() < limit:
             task = self.store.task(task_id)
             if task["status"] == "done":
                 output = task["result"].get("output")

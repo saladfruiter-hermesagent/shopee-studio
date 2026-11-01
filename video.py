@@ -1,4 +1,7 @@
-"""Video jobs: Google Flow generation on the VM worker, credit budget, pause/alerts and Telegram delivery."""
+"""Video jobs: Google Flow generation on the VM worker, credit budget, pause/alerts and Telegram delivery.
+
+Each product reaches Telegram in a single sendVideo: the subtitled video with the description and links frozen
+in the job's snapshot. Jobs created before that change (no snapshot) still reply to their product photo."""
 import json
 import re
 import threading
@@ -23,6 +26,10 @@ LABELS = {"queued": "na fila", "working": "worker iniciou", "preparing": "prepar
           "sending": "enviando ao Telegram", "sent": "enviado", "delivery_unknown": "entrega não confirmada",
           "delivery_failed": "envio ao Telegram falhou", "failed": "falhou (sem custo)",
           "unknown": "incerto (créditos podem ter sido gastos)", "skipped": "não gerado"}
+# Product delivery state that mirrors each job state (single-message flow only).
+DELIVERY = {**{state: "pending" for state in ACTIVE}, "rendered": "pending", "sending": "sending", "sent": "sent",
+            "delivery_unknown": "unknown", "delivery_failed": "refused", "failed": "failed", "unknown": "failed",
+            "skipped": "failed"}
 
 
 def today(tz):
@@ -86,8 +93,9 @@ class Videos:
             db.execute(f"UPDATE videos SET {','.join(k + '=?' for k in values)} WHERE id=?", (*values.values(), video_id))
 
     # ---------- queueing ----------
-    def enqueue(self, run_id, product, photo_message_id, manual=False):
-        """Create the job, or a 'skipped' record explaining why no credits will be spent."""
+    def enqueue(self, run_id, product, photo_message_id=None, manual=False, snapshot=None):
+        """Create the job, or a 'skipped' record explaining why no credits will be spent.
+        `snapshot` = caption and links of the single message sent when the video is ready."""
         settings = self.store.settings()
         analysis = product.get("analysis") or {}
         with self.lock:
@@ -113,16 +121,19 @@ class Videos:
             now = datetime.now(self.tz).isoformat()
             with self.store.db() as db:
                 video_id = db.execute(
-                    "INSERT INTO videos(run_id,product_key,day,state,credits,attempts,photo_message_id,error,created,updated) "
-                    "VALUES(?,?,?,?,?,0,?,?,?,?)",
+                    "INSERT INTO videos(run_id,product_key,day,state,credits,attempts,photo_message_id,error,created,updated,snapshot) "
+                    "VALUES(?,?,?,?,?,0,?,?,?,?,?)",
                     (run_id, product["key"], today(self.tz), "skipped" if reason else "queued",
-                     0 if reason else settings["video_cost"], photo_message_id, reason, now, now)).lastrowid
+                     0 if reason else settings["video_cost"], photo_message_id, reason, now, now,
+                     json.dumps(snapshot) if snapshot else None)).lastrowid
             if reason:
                 if manual:
                     raise ValueError("Vídeo não gerado: " + reason + ".")
                 self.store.log("info", f"Vídeo de {product['name'][:50]} não gerado: {reason}.")
+                self.sync(video_id)
                 return video_id
             self._task(video_id, product, analysis, settings)
+            self.sync(video_id)
             self.store.log("info", f"Vídeo de {product['name'][:50]} na fila do worker ({settings['video_cost']} créditos reservados).")
             return video_id
 
@@ -139,9 +150,38 @@ class Videos:
         run = self.store.run(run_id)
         product = next((p for p in run["products"] if p["key"] == key), None)
         delivery = self.store.deliveries(run_id).get(key)
-        if not product or not delivery or delivery["state"] != "sent" or not delivery["photo_message_id"]:
+        if not product or not delivery:
+            raise ValueError("Só é possível gerar vídeo de produto de uma consulta já enviada.")
+        if delivery.get("snapshot"):
+            if delivery["state"] != "failed":
+                raise ValueError("Só é possível gerar de novo um produto com falha; aguarde, confira ou reenvie o vídeo pronto.")
+            if key in self.store.exclusions():
+                raise ValueError("Este produto já foi enviado, está em andamento em outra consulta ou foi descartado.")
+            # Same message as the original reservation: later edits never change what was approved.
+            return self.enqueue(run_id, product, manual=True, snapshot=json.loads(delivery["snapshot"]))
+        if delivery["state"] != "sent" or not delivery["photo_message_id"]:
             raise ValueError("Só é possível gerar vídeo de produto já enviado ao Telegram.")
         return self.enqueue(run_id, product, delivery["photo_message_id"], manual=True)
+
+    def sync(self, video_id):
+        """Mirror a single-message job on its product delivery and refresh the run status."""
+        with self.store.db() as db:
+            row = db.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
+        if not row or not row["snapshot"]:
+            return
+        state, error = DELIVERY.get(row["state"], "pending"), row["error"] or "sem detalhe"
+        message = {"failed": {"failed": f"Vídeo falhou sem custo: {error} Use Gerar vídeo para tentar de novo.",
+                              "unknown": f"Geração incerta; créditos podem ter sido gastos. Confira o Flow antes de gerar "
+                                         f"de novo. {error}",
+                              "skipped": f"Vídeo não gerado: {error}."}.get(row["state"]),
+                   "refused": f"Telegram recusou o vídeo ({error}). O arquivo foi guardado: use Reenviar vídeo.",
+                   "unknown": "Entrega não confirmada; confira o Telegram. Não haverá reenvio automático."}.get(state)
+        with self.store.db() as db:
+            db.execute("UPDATE deliveries SET state=?,error=?,message_id=COALESCE(?,message_id),sent_at=? "
+                       "WHERE run_id=? AND product_key=? AND snapshot IS NOT NULL",
+                       (state, message, row["message_id"] if state == "sent" else None,
+                        row["updated"] if state == "sent" else None, row["run_id"], row["product_key"]))
+        self.store.refresh_delivery(row["run_id"])
 
     def by_task(self, task_id):
         with self.store.db() as db:
@@ -185,6 +225,7 @@ class Videos:
         if ok:
             if not video["file"]:
                 self.update(video["id"], state="unknown", error="Worker concluiu sem enviar o arquivo.")
+                self.sync(video["id"])
                 return
             meta = output if isinstance(output, dict) else {}
             self.update(video["id"], state="rendered", meta=json.dumps(meta)[:4000], error=None)
@@ -202,6 +243,7 @@ class Videos:
             return
         self.update(video["id"], state="unknown" if spent else "failed", credits=video["credits"] if spent else 0,
                     error=message)
+        self.sync(video["id"])
         self.store.log("error", f"Vídeo #{video['id']} {'incerto' if spent else 'falhou'}: {message}")
         if code in PAUSE_CODES:
             self.pause(code, message)
@@ -217,6 +259,7 @@ class Videos:
             spent = video["state"] in CHARGED
             self.update(video["id"], state="unknown" if spent else "failed", credits=video["credits"] if spent else 0,
                         error="O worker não concluiu no prazo." + (" Confira o projeto no Flow." if spent else ""))
+            self.sync(video["id"])
         with self.store.db() as db:
             pending = [r[0] for r in db.execute("SELECT id FROM videos WHERE state='rendered'")]
         for video_id in pending:
@@ -254,6 +297,8 @@ class Videos:
 
     # ---------- delivery ----------
     def deliver(self, video_id, manual=False):
+        """Send the ready video. Single-message jobs carry the snapshot caption (description + links);
+        legacy jobs reply to their product photo. A refusal keeps the file; an uncertain result is never retried."""
         from core import TelegramRejected
         with self.lock:
             with self.store.db() as db:
@@ -264,15 +309,22 @@ class Videos:
                         raise ValueError("Vídeo não está disponível para envio.")
                     return
                 db.execute("UPDATE videos SET state='sending' WHERE id=?", (video_id,))
+        self.sync(video_id)
         video = dict(row)
         path = self.directory / video["file"]
         telegram = self.store.telegram()
         token = telegram["token"]
         meta = json.loads(video["meta"] or "{}")
-        run = self.store.run(video["run_id"])
-        name = next((p["name"] for p in run["products"] if p["key"] == video["product_key"]), "Produto")
-        payload = {"chat_id": telegram["chat_id"], "caption": f"Vídeo legendado · {name[:90]}", "supports_streaming": "true",
-                   "reply_parameters": {"message_id": video["photo_message_id"], "allow_sending_without_reply": True}}
+        snapshot = json.loads(video["snapshot"]) if video.get("snapshot") else None
+        if snapshot:
+            name = snapshot.get("name") or "Produto"
+            payload = {"chat_id": telegram["chat_id"], "caption": snapshot["caption"], "parse_mode": "HTML",
+                       "supports_streaming": "true"}
+        else:
+            run = self.store.run(video["run_id"])
+            name = next((p["name"] for p in run["products"] if p["key"] == video["product_key"]), "Produto")
+            payload = {"chat_id": telegram["chat_id"], "caption": f"Vídeo legendado · {name[:90]}", "supports_streaming": "true",
+                       "reply_parameters": {"message_id": video["photo_message_id"], "allow_sending_without_reply": True}}
         for key in ("width", "height"):
             if meta.get(key):
                 payload[key] = str(meta[key])
@@ -288,12 +340,16 @@ class Videos:
                                                            path.read_bytes()))
         except TelegramRejected as error:
             self.update(video_id, state="delivery_failed", error=str(error)[:300])
+            self.sync(video_id)
             self.store.log("error", f"Vídeo #{video_id} recusado pelo Telegram: {error}")
             return
         except Exception as error:
             self.update(video_id, state="delivery_unknown", error="Entrega não confirmada; confira o Telegram.")
+            self.sync(video_id)
             self.store.log("error", f"Vídeo #{video_id}: entrega não confirmada ({str(error)[:150].replace(token, '[oculto]')}).")
             return
         self.update(video_id, state="sent", message_id=message_id, error=None, file=None)
+        self.sync(video_id)
         path.unlink(missing_ok=True)
-        self.store.log("info", f"Vídeo #{video_id} enviado ao Telegram em resposta ao produto.")
+        self.store.log("info", f"Vídeo #{video_id} enviado ao Telegram" + (" com descrição e links." if snapshot
+                                                                          else " em resposta ao produto."))

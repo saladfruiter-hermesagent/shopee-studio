@@ -207,13 +207,17 @@ def create_app(data_dir=None, testing=False):
     @app.get("/api/runs/<int:run_id>/preview")
     def preview(run_id):
         run = store.run(run_id)
-        products = engine.sendable_products(run)
-        return jsonify(**telegram_preview(products), destination=store.telegram_public(),
+        if run["delivery"] == "not_sent":
+            products, deliveries = engine.sendable_products(run), None
+        else:  # After sending: the messages frozen for each product, with their state.
+            deliveries = store.deliveries(run_id)
+            products = [p for p in run["products"] if p["key"] in deliveries]
+        return jsonify(**telegram_preview(products, deliveries), destination=store.telegram_public(),
                        can_send=run["status"] == "ready" and run["delivery"] == "not_sent" and bool(products))
 
     @app.post("/api/runs/<int:run_id>/send")
     def send(run_id):
-        return jsonify(message_id=engine.send(run_id))
+        return jsonify(queued=engine.send(run_id))
 
     @app.post("/api/llm")
     def llm_settings():

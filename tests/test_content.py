@@ -13,8 +13,8 @@ from contextlib import closing
 from unittest.mock import patch
 
 import analysis
-from content import (CAPTION_LIMIT, copy_problems, caption_text, fallback_copy, product_messages, text_length,
-                     TELEGRAM_CAPTION_LIMIT)
+from content import (CAPTION_LIMIT, CaptionTooLong, copy_problems, caption_text, fallback_copy, plain, text_length,
+                     TELEGRAM_CAPTION_LIMIT, video_caption)
 from core import Engine, Store
 from llm import ModelError, Runner, validate_llm, public_llm, LLM_DEFAULTS
 from app import create_app
@@ -67,31 +67,35 @@ class CopyTest(unittest.TestCase):
                 self.assertEqual(copy_problems(copy["description"], copy["hashtags"]), [])
                 self.assertNotIn("…", copy["description"])
 
-    def test_messages_escape_html_and_keep_six_links(self):
-        p = product(name="<b>Pote</b> & Tampa")
+    def test_video_caption_escapes_html_and_keeps_six_numbered_links(self):
+        p = product(name="Pote <Tampa> & Cia")
         links = [dict(key=f"{i}:{i}", link=f"https://s.shopee.com.br/{i}?a=1&b=2") for i in range(6)]
         p["analysis"] = dict(status="ok", caption="Frase <com> & tags #Pote #Cozinha", prompt="Prompt <x>", links=links)
-        caption, text, in_caption = product_messages(p)
-        self.assertIn("&lt;b&gt;Pote&lt;/b&gt; &amp; Tampa", caption)
+        caption = video_caption(p)
+        self.assertIn("<b>Pote &lt;Tampa&gt; &amp; Cia</b>", caption)
         self.assertIn("<pre>Frase &lt;com&gt; &amp; tags #Pote #Cozinha</pre>", caption)
-        self.assertIn("<pre>Prompt &lt;x&gt;</pre>", text)
-        self.assertTrue(in_caption)
-        self.assertIn("Links (6):", caption)
+        for i in range(6):
+            self.assertIn(f"{i + 1}. https://s.shopee.com.br/{i}?a=1&amp;b=2", caption)
+        self.assertNotIn("Prompt", caption)  # the Flow prompt stays in the panel
         self.assertNotIn("Aviso", caption)
+        self.assertLessEqual(text_length(plain(caption)), TELEGRAM_CAPTION_LIMIT)
 
-    def test_long_links_move_to_prompt_message(self):
-        p = product()
-        links = [dict(key=str(i), link="https://shopee.com.br/" + "a" * 180 + str(i)) for i in range(6)]
-        p["analysis"] = dict(status="ok", caption="Frase #Pote #Cozinha", prompt="Prompt", links=links)
-        caption, text, in_caption = product_messages(p)
-        self.assertFalse(in_caption)
-        self.assertLessEqual(text_length(caption), TELEGRAM_CAPTION_LIMIT)
-        self.assertIn("Links (6):", text)
+    def test_video_caption_compacts_identification_before_refusing(self):
+        p = product(name="Nome bem longo do produto " * 6)
+        p["analysis"] = dict(status="ok", caption="Frase #Pote #Cozinha", links=[
+            dict(key=str(i), link="https://shopee.com.br/" + "a" * 135 + str(i)) for i in range(6)])
+        caption = video_caption(p)
+        self.assertLessEqual(text_length(plain(caption)), TELEGRAM_CAPTION_LIMIT)
+        for i in range(6):
+            self.assertIn("a" * 135 + str(i), caption)  # URLs are never cut
+        p["analysis"]["links"] = [dict(key=str(i), link="https://shopee.com.br/" + "a" * 300 + str(i)) for i in range(6)]
+        with self.assertRaisesRegex(CaptionTooLong, "1024"):
+            video_caption(p)
 
-    def test_unvalidated_content_is_flagged(self):
-        caption, text, _ = product_messages(product())
+    def test_unvalidated_content_is_flagged_in_the_video_caption(self):
+        caption = video_caption(product())
         self.assertIn("sem validação do modelo", caption)
-        self.assertIn("10 s", text)
+        self.assertIn("1. https://s.shopee.com.br/main", caption)
 
 
 class AnalysisTest(unittest.TestCase):
@@ -182,6 +186,19 @@ class RunnerTest(unittest.TestCase):
         with self.assertRaises(ModelError):
             runner.run("prompt", {}, [], self.check)
 
+    def test_deadline_bounds_calls_retries_and_fallbacks(self):
+        self.configure("openai", "openai", retries=2)
+        timeouts = []
+        def http(url, body, headers, timeout):
+            timeouts.append(timeout)
+            return openai_reply(good_output())
+        Runner(self.store, http=http).run("prompt", {}, [], self.check, deadline=time.time() + 100)
+        self.assertLessEqual(timeouts[0], 100)
+        calls = []
+        with self.assertRaisesRegex(ModelError, "Prazo"):
+            Runner(self.store, http=lambda *a: calls.append(1)).run("prompt", {}, [], self.check, deadline=time.time() + 5)
+        self.assertEqual(calls, [])
+
     def test_agy_through_worker(self):
         self.configure("agy")
         self.store.worker_seen("vm", "1", ["llm"])
@@ -236,116 +253,67 @@ class DeliveryTest(unittest.TestCase):
         self.addCleanup(sleeper.stop)
         self.store = Store(self.temp.name)
         self.store.save_telegram(dict(token="123456:" + "A" * 30, chat_id="-1001234", thread_id=""))
+        self.store.save_settings(dict(flow_project_url="https://flow.google.com/project/test"))
         nodes = [node(i, productName="Pote Hermético 1,5L Tampa Click",
                       imageUrl=f"https://down-br.img.susercontent.com/file/{i}") for i in range(1, 3)]
         self.engine = Engine(self.store, fetcher=lambda _: nodes,
-                             searcher=lambda p, s, excluded, budget: analysis.select_candidates(
-                                 [candidate_node(1), candidate_node(2)], p, excluded, budget),
-                             runner=FakeRunner(lambda images: good_output(len(images) - 1, {1: "match"})),
-                             image_fetcher=lambda url: ("image/jpeg", b"\xff\xd8original-bytes"))
+                             searcher=lambda *a: [candidate_node(1), candidate_node(2)],
+                             runner=FakeRunner(lambda images: good_output(len(images) - 1, {1: "match"})))
         self.captured = []
+        self.engine.sender = lambda url, body, headers=None: self.captured.append(url) or {"ok": True, "result": {"message_id": 1}}
 
-    def sender(self, fail=None):
-        def send(url, body, headers=None):
-            if headers and headers["Content-Type"].startswith("multipart/form-data"):
-                payload = {k.decode(): v.decode() for k, v in re.findall(rb'name="(\w+)"\r\n\r\n(.*?)\r\n--', body, re.S)}
-                payload["file"] = body
-            else:
-                payload = json.loads(body)
-            self.captured.append((url.rsplit("/", 1)[1], payload))
-            if fail:
-                fail(len(self.captured), url)
-            return {"ok": True, "result": {"message_id": len(self.captured)}}
-        return send
+    def snapshots(self, run_id):
+        return {k: json.loads(d["snapshot"]) for k, d in self.store.deliveries(run_id).items()}
 
-    def test_photo_caption_links_and_equivalent_exclusion(self):
-        self.engine.sender = self.sender()
+    def test_equivalent_links_are_frozen_in_the_message_and_excluded(self):
         run_id = self.engine.collect()
         run = self.store.run(run_id)
-        first = next(p for p in run["products"] if p["selected"])
+        first, second = [p for p in run["products"] if p["selected"]]
         self.assertEqual(first["analysis"]["status"], "ok")
         self.assertEqual(len(first["analysis"]["links"]), 2)
-        second = [p for p in run["products"] if p["selected"]][1]
         self.assertEqual(len(second["analysis"]["links"]), 2)  # C1 of the second is a different candidate
         self.assertNotEqual(first["analysis"]["links"][1]["key"], second["analysis"]["links"][1]["key"])
         self.engine.send(run_id)
-        methods = [m for m, _ in self.captured]
-        self.assertEqual(methods, ["sendPhoto", "sendMessage", "sendPhoto", "sendMessage"])
-        photo = self.captured[0][1]
-        self.assertEqual(photo["parse_mode"], "HTML")
-        self.assertIn(b"original-bytes", photo["file"])  # the original image is uploaded, not re-encoded
-        self.assertNotIn("photo", {k for k in photo if k != "file"})
-        self.assertIn("<pre>Mantém os alimentos frescos", photo["caption"])
-        self.assertIn("https://s.shopee.com.br/c1", photo["caption"] + self.captured[2][1]["caption"])
-        self.assertEqual(self.captured[1][1]["reply_parameters"]["message_id"], 1)
-        self.assertIn("Prompt Google Flow · 10 s", self.captured[1][1]["text"])
-        excluded = self.store.exclusions()
-        self.assertTrue({"101:101", "102:102"} <= excluded)
+        self.assertEqual(self.captured, [])  # nothing is sent before the videos are ready
+        snapshot = self.snapshots(run_id)[first["key"]]
+        self.assertIn("<pre>Mantém os alimentos frescos", snapshot["caption"])
+        self.assertIn("2. https://s.shopee.com.br/c", snapshot["caption"])
+        self.assertEqual([l["key"] for l in snapshot["links"]], [l["key"] for l in first["analysis"]["links"]])
+        self.assertTrue({"101:101", "102:102"} <= self.store.exclusions())
 
-    def test_rejected_photo_falls_back_to_text(self):
-        def fail(count, url):
-            if url.endswith("sendPhoto"):
-                raise urllib.error.HTTPError(url, 400, "Bad", {}, io.BytesIO(b'{"description":"wrong file"}'))
-        self.engine.sender = self.sender(fail)
-        run_id = self.engine.collect()
-        self.engine.send(run_id)
-        self.assertEqual([m for m, _ in self.captured].count("sendMessage"), 4)
-        self.assertEqual(self.store.run(run_id)["delivery"], "sent")
-        self.assertIn("foto recusada", self.store.run(run_id)["error"])
-
-    def test_image_download_failure_lets_telegram_fetch_url(self):
-        self.engine.image_fetcher = lambda url: (_ for _ in ()).throw(OSError("offline"))
-        self.engine.sender = self.sender()
-        self.engine.send(self.engine.collect())
-        self.assertTrue(self.captured[0][1]["photo"].startswith("https://down-br.img.susercontent.com/"))
-
-    def test_definite_refusal_allows_sending_again(self):
-        def fail(count, url):
-            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, io.BytesIO(b'{"description":"bot was kicked"}'))
-        self.engine.sender = self.sender(fail)
-        run_id = self.engine.collect()
-        with self.assertRaisesRegex(ValueError, "recusou"):
-            self.engine.send(run_id)
-        self.assertEqual(self.store.run(run_id)["delivery"], "not_sent")
-        self.assertEqual(self.store.exclusions(), set())
-        self.engine.sender = self.sender()
-        self.engine.send(run_id)
-        self.assertEqual(self.store.run(run_id)["delivery"], "sent")
-
-    def test_ambiguous_prompt_message_keeps_product_excluded(self):
-        def fail(count, url):
-            if count == 2:
-                raise TimeoutError()
-        self.engine.sender = self.sender(fail)
-        run_id = self.engine.collect()
-        with self.assertRaises(ValueError):
-            self.engine.send(run_id)
-        run = self.store.run(run_id)
-        self.assertEqual(run["delivery"], "unknown")
-        selected = [p["key"] for p in run["products"] if p["selected"]]
-        self.assertEqual(len(selected), 1)
-        self.assertIn(selected[0], self.store.exclusions())
-
-    def test_model_failure_still_delivers_flagged_fallback(self):
+    def test_model_failure_flags_the_fallback_text_in_the_message(self):
         self.engine.runner = FakeRunner(error=ModelError("todos falharam"))
-        self.engine.sender = self.sender()
         run_id = self.engine.collect()
         chosen = [p for p in self.store.run(run_id)["products"] if p["selected"]]
         self.assertTrue(all(p["analysis"]["status"] == "fallback" for p in chosen))
         self.assertTrue(all(len(p["analysis"]["links"]) == 1 for p in chosen))
         self.engine.send(run_id)
-        self.assertIn("sem validação do modelo", self.captured[0][1]["caption"])
+        self.assertTrue(all("sem validação do modelo" in s["caption"] for s in self.snapshots(run_id).values()))
 
-    def test_old_database_is_migrated(self):
+    def test_old_database_is_migrated_without_losing_history(self):
         directory = tempfile.mkdtemp(dir=self.temp.name)
         with closing(sqlite3.connect(os.path.join(directory, "shopee.sqlite3"))) as db, db:
             db.execute("""CREATE TABLE runs (id INTEGER PRIMARY KEY, started TEXT, finished TEXT, status TEXT,
                 source TEXT, settings TEXT, warning TEXT, error TEXT, scanned INTEGER DEFAULT 0,
                 message_id INTEGER, delivery TEXT DEFAULT 'not_sent', sent_at TEXT)""")
             db.execute("INSERT INTO runs(started,status,settings,delivery) VALUES('x','ready','{}','sent')")
+            db.execute("""CREATE TABLE offers (run_id INTEGER, product_key TEXT, body TEXT, selected INTEGER,
+                PRIMARY KEY(run_id, product_key))""")
+            db.execute("INSERT INTO offers VALUES(1,'7:7',?,1)", (json.dumps(dict(key="7:7", name="Antigo", score=1)),))
+            db.execute("""CREATE TABLE deliveries (run_id INTEGER, product_key TEXT, state TEXT, photo_message_id INTEGER,
+                text_message_id INTEGER, sent_at TEXT, error TEXT, PRIMARY KEY(run_id, product_key))""")
+            db.execute("INSERT INTO deliveries VALUES(1,'7:7','sent',50,51,'2026-10-01','')")
+            db.execute("""CREATE TABLE videos (id INTEGER PRIMARY KEY, run_id INTEGER, product_key TEXT, day TEXT,
+                state TEXT, task_id INTEGER, credits INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0,
+                photo_message_id INTEGER, message_id INTEGER, file TEXT, meta TEXT, error TEXT, created TEXT, updated TEXT)""")
+            db.execute("INSERT INTO videos(run_id,product_key,state,photo_message_id) VALUES(1,'7:7','sent',50)")
         store = Store(directory)
         self.assertEqual(store.runs()[0]["progress"], None)
         self.assertEqual(store.llm()["providers"][0]["type"], "agy")
+        product = store.run(1)["products"][0]
+        self.assertEqual((product["delivery"], product["delivery_mode"], product["video"]["state"]), ("sent", "legacy", "sent"))
+        self.assertEqual(store.run(1)["delivery"], "sent")  # legacy run status is not recomputed
+        self.assertIn("7:7", store.exclusions())
 
 
 class WorkerApiTest(unittest.TestCase):
@@ -404,8 +372,27 @@ class WorkerApiTest(unittest.TestCase):
         run_id = engine.collect()
         preview = self.client.get(f"/api/runs/{run_id}/preview").json
         self.assertEqual(len(preview["messages"]), 1)
-        self.assertIn("MENSAGEM 1", preview["text"])
+        self.assertIn("VÍDEO 1", preview["text"])
+        self.assertIn("única mensagem", preview["text"])
         self.assertNotIn("<pre>", preview["text"])
+
+    def test_preview_after_sending_shows_the_frozen_message_and_its_state(self):
+        engine, store = self.app.extensions["engine"], self.store
+        engine.fetcher = lambda _: [node(imageUrl="https://down-br.img.susercontent.com/file/1")]
+        engine.searcher, engine.runner = (lambda *a: []), FakeRunner()
+        store.save_telegram(dict(token="123456:" + "A" * 30, chat_id="-1001234", thread_id=""))
+        store.save_settings(dict(flow_project_url="https://flow.google.com/project/test"))
+        run_id = engine.collect()
+        engine.send(run_id)
+        product = store.run(run_id)["products"][0]
+        product["analysis"]["caption"] = "Alterado depois #Outro #Texto"
+        store.save_analysis(run_id, product)
+        preview = self.client.get(f"/api/runs/{run_id}/preview").json
+        self.assertFalse(preview["can_send"])
+        self.assertEqual(len(preview["messages"]), 1)
+        self.assertIn("Mantém os alimentos frescos", preview["text"])
+        self.assertNotIn("Alterado", preview["text"])
+        self.assertIn("aguardando vídeo", preview["text"])
 
 
 if __name__ == "__main__":

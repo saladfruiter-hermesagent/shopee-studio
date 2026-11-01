@@ -1,11 +1,10 @@
-"""Copy rules, video prompt assembly and Telegram message layout."""
+"""Copy rules, video prompt assembly and the Telegram video caption."""
 import html
 import re
 import unicodedata
 
 CAPTION_LIMIT = 150          # description + hashtags, defined by the user
-TELEGRAM_CAPTION_LIMIT = 1024
-TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_CAPTION_LIMIT = 1024  # sendVideo caption: 0-1024 characters after entities parsing (Bot API)
 VIDEO_SECONDS = 10
 MAX_LINKS = 6                # selected listing + up to 5 validated equivalents
 NARRATION_MAX_WORDS = 25
@@ -168,29 +167,35 @@ def money(value):
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def product_messages(product):
-    """Return (caption_html, prompt_html, links_in_caption) for one product."""
+class CaptionTooLong(ValueError):
+    """The single video message cannot carry every approved link within Telegram's caption limit."""
+
+
+UNVALIDATED = "Aviso: texto automático, sem validação do modelo."
+
+
+def video_caption(product):
+    """HTML caption of the single Telegram message: short name, copyable description and numbered links.
+
+    Links are never cut or dropped: identification is shortened first, and if even that does not fit,
+    the delivery is refused so the panel can ask for a decision."""
     analysis = product.get("analysis") or {}
     copy = analysis.get("caption") or caption_text(**fallback_copy(product))
-    prompt = analysis.get("prompt") or video_prompt(fallback_script(product))
     links = [entry["link"] for entry in analysis.get("links") or [] if entry.get("link")] or [product["link"]]
-    head = [f"<b>{html.escape(product['name'][:100])}</b>",
-            html.escape(f"{money(product['price'])} · comissão estimada {money(product['commission'])} · "
-                        f"nota {product['rating']:.1f} · {product['sales']} vendas"),
-            f"<pre>{html.escape(copy)}</pre>"]
+    body = [f"<pre>{html.escape(copy)}</pre>"]
     if analysis.get("status") != "ok":
-        head.append(html.escape("Aviso: texto automático sem validação do modelo; nenhum anúncio equivalente foi verificado."))
-    link_lines = [f"Links ({len(links)}):"] + [f"{i}. {html.escape(link)}" for i, link in enumerate(links, 1)]
-    prompt_lines = [f"Prompt Google Flow · {VIDEO_SECONDS} s", f"<pre>{html.escape(prompt)}</pre>"]
-    caption = "\n".join(head + link_lines)
-    if text_length(caption) <= TELEGRAM_CAPTION_LIMIT:
-        return caption, "\n".join(prompt_lines), True
-    caption = "\n".join(head)
-    text = "\n".join(prompt_lines + [""] + link_lines)
-    if text_length(caption) > TELEGRAM_CAPTION_LIMIT or text_length(text) > TELEGRAM_TEXT_LIMIT:
-        raise ValueError(f"Mensagem de {product['name'][:40]} excede o limite do Telegram.")
-    return caption, text, False
+        body.append(html.escape(UNVALIDATED))
+    body += ["Links:"] + [f"{i}. {html.escape(link)}" for i, link in enumerate(links, 1)]
+    words = display_words(product.get("name"))
+    for limit in (60, 30, 0):
+        name = fit_words(words, limit).rstrip(" ,;:-/|") if limit else ""
+        caption = "\n".join(([f"<b>{html.escape(name)}</b>"] if name else []) + body)
+        if text_length(plain(caption)) <= TELEGRAM_CAPTION_LIMIT:
+            return caption
+    raise CaptionTooLong(f"A mensagem com {len(links)} link(s) passa de {TELEGRAM_CAPTION_LIMIT} caracteres, "
+                         "o limite da legenda do vídeo no Telegram. Nada foi cortado; decida no painel.")
 
 
 def plain(html_text):
+    """Text Telegram counts after parsing the HTML entities."""
     return html.unescape(re.sub(r"</?(b|pre)>", "", html_text))
