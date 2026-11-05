@@ -117,6 +117,22 @@ O relatório lista candidatos, não links aprovados: só o modelo decide "mesmo 
 - Um único processo/container deve usar o banco. Não escale réplicas.
 - Desative eventual tarefa antiga ShopeeAffiliateTop5Daily no Windows ao migrar para o Unraid, para evitar dois agendamentos.
 
+## Login na Shopee (sessão autenticada)
+
+O painel usa a Open API; para páginas que só existem logado (pedidos, notificações, carrinho,
+área de afiliado) existe um caminho separado, por browser anti-detecção: **Camofox** em dois
+containers no thevault — `camofox` (headless, 9377) e `camofox-vnc` (janela visível, 9378 + noVNC
+6080) — com perfil compartilhado.
+
+Fluxo resumido: abrir a Shopee no container do VNC → usuário resolve o captcha e entra com
+e-mail/telefone (**não** “Entrar com Google”: o popup quebra a janela) → `POST /stop` com
+`x-admin-key` grava `storage-state.json` → `docker restart camofox` para o headless reler o perfil
+→ navegar por URL. Verificado em 2026-11-05: 28 cookies `shopee.com.br` persistidos, busca e
+página de produto autenticadas sem novo captcha.
+
+Procedimento completo, comandos prontos e armadilhas: [`docs/login-shopee-camofox.md`](docs/login-shopee-camofox.md).
+Detalhes do plugin, da variante VNC e do script de checkpoint: skill `camofox-setup`.
+
 ## Scripts legados
 
 Na cópia local original, daily_shopee_top5.ps1, docker-schedule.sh e install_daily_task.ps1 foram preservados; eles não fazem parte desta publicação nem são usados pelo novo container. O fluxo recomendado é o painel. Não execute os dois agendadores ao mesmo tempo.
