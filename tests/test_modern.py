@@ -104,7 +104,7 @@ class RankingTest(unittest.TestCase):
         self.assertAlmostEqual(product["score"], 903.3, delta=1.5)
         self.assertEqual(product["competition"], "baixa")
         self.assertEqual(product["mode"], "modern")
-        self.assertEqual(product["product_type"], "piso vinilico autocolante")
+        self.assertEqual(product["product_type"], "piso vinilico")
         self.assertEqual(selected, {"1:1"})
         self.assertIn("Tendência +68%/semana", "\n".join(product["reasons"]))
         self.assertIn("Funil do Modo Moderno: 1 anúncios lidos, 1 candidatos", warning)
@@ -127,7 +127,7 @@ class RankingTest(unittest.TestCase):
         nodes = [mnode(1, productName="Piso Vinílico Autocolante 91x15"), mnode(2, productName="Luminária de mesa LED")]
         products, _, _ = self.rank(nodes, dict(modern_name_filter="piso, VINIL"))
         self.assertEqual([p["key"] for p in products], ["1:1"])
-        products, _, warning = self.rank(nodes, recent_types={"piso vinilico autocolante"})
+        products, _, warning = self.rank(nodes, recent_types={"piso vinilico"})
         self.assertEqual([p["key"] for p in products], ["2:2"])
         self.assertIn("1 tipo de produto repetido", warning)
 
@@ -165,6 +165,9 @@ class RankingTest(unittest.TestCase):
         self.assertIn("Selecionadas 2 de 5", warning)
         same = [mnode(1, productName="Piso vinílico autocolante cinza"), mnode(2, productName="Piso vinílico autocolante bege")]
         self.assertEqual(len(self.rank(same)[1]), 1)
+        swapped = [mnode(1, productName="Parafusadeira Furadeira Sem Fio 48V"), mnode(2, productName="Furadeira Parafusadeira de Impacto 48V")]
+        self.assertEqual(len(self.rank(swapped)[1]), 1)
+        self.assertEqual(modern.product_type("Kit 12 Piso Laminado"), "laminado piso")
         spread = [mnode(i, _source="A", sales=1000) for i in range(1, 5)] + [mnode(i, _source="B", sales=100) for i in range(5, 7)]
         _, selected, _ = self.rank(spread, dict(top_count=4))
         self.assertEqual(sum(key in selected for key in ("5:5", "6:6")), 2)  # fair share for the weaker category

@@ -71,11 +71,11 @@ def categories(settings):
 
 
 def product_type(name):
-    """First three meaningful words of the name ('piso vinilico autocolante'): two listings of the same type
-    should not reach the audience in the same week."""
-    words = [w for w in name_tokens(name) if len(w) >= 3 and not w.isdigit() and not any(c.isdigit() for c in w)
-             and w not in _MARKETING]
-    return " ".join(words[:3]) if len(words) >= 2 else ""
+    """First two meaningful words of the name, in alphabetical order ('piso vinilico'): two listings of the same
+    type should not reach the audience in the same week. The order is ignored because sellers swap it
+    ('Furadeira Parafusadeira' x 'Parafusadeira Furadeira', seen in the real data on 09/11/2026)."""
+    words = [w for w in name_tokens(name) if len(w) >= 3 and not any(c.isdigit() for c in w) and w not in _MARKETING]
+    return " ".join(sorted(words[:2])) if len(words) >= 2 else ""
 
 
 def growth(points, sales, today):

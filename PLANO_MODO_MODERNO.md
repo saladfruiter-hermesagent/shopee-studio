@@ -53,9 +53,27 @@ e o vídeo desse produto segue esse modo mesmo que a preferência mude depois (o
 | D7 | Potencial de vídeo pela IA (nota 0–10 antes de escolher) fica atrás de uma chave própria, **desligada** por padrão (custa uma chamada de modelo por consulta). | padrão proposto |
 | D8 | Constantes da fórmula (0,7 / 0,6 / 1,4 / 1,15 / R$ 400 / 1.500 vendas) ficam fixas no código, documentadas, sem campo na interface (YAGNI). | padrão proposto |
 
-## 3. Fatos da API usados (verificar com o script da Tarefa M0)
+## 3. Fatos da API usados
 
-Fonte: documento do amigo + documentação pública da Open API. **Não confirmados com as nossas credenciais.**
+**Conferido com as credenciais do painel em 09/11/2026** (consultas só de leitura feitas de dentro do container de
+produção, sem imprimir segredos, sem Telegram e sem Flow):
+
+- Todos os campos novos voltam preenchidos: `sellerCommissionRate` (fração, ex. `0.04`; há vendedores com `0.45`),
+  `priceDiscountRate` (inteiro em %, ex. `29`), `productCatIds` (lista de 3 níveis, ex. `[100636, 100715, 101186]`),
+  `periodStartTime`. `listType: 2` responde (982 itens em 20 páginas).
+- `sortType: 2` **ordena por vendas dentro de uma categoria**, mas **não** na lista geral (sem `productCatId`): lá a
+  ordem é outra. Por isso a posição é recalculada pelas vendas lidas em cada fonte; usar categorias é o recomendado.
+- Consultas com `productCatId` respondem `error [10000]: System Error` em cerca de metade das chamadas e funcionam ao
+  repetir alguns segundos depois. Tratamento: pausa de 1 s entre páginas e até 5 tentativas com espera crescente;
+  página que continua falhando só encurta a categoria (aviso). Simulação real: 2 categorias × 10 páginas + 20 do
+  top = 450 anúncios em ~6 min, 2 páginas perdidas.
+- A paginação repete anúncios entre páginas (53 repetidos em 450): o funil já descarta.
+- `periodStartTime` é o início do período da oferta/comissão e quase todos os anúncios têm o mesmo valor (≈75 dias):
+  o fator frescor raramente muda algo. Mantido como no processo de referência.
+- `sales` alto em categorias populares (ex.: 38.737): o significado "30 dias" vem do documento do amigo, não foi
+  provado. A seleção não depende disso: os cortes e a saturação usam o valor relativo.
+
+Texto original do plano, antes da conferência:
 
 - `productOfferV2(listType: 0, sortType: 2, …)` → ordenado por **vendas** (o nosso Legacy usa `sortType: 5`, comissão).
 - `productCatId: <int>` filtra por categoria; `listType: 2` = itens de maior desempenho entre afiliados ("top").
@@ -147,8 +165,9 @@ o modo Legacy continua com os 98 testes antigos verdes e `shopee_query` idêntic
 - `CATEGORY_HINT` (tabela da seção 3, só para a interface/rótulos).
 - `growth(history, now_sales, today)`: ponto de referência mais próximo de 7 dias atrás com pelo menos 2 dias de
   idade; `g = (agora − ref) / max(ref, 30) × 7 / dias`; devolve `None` sem histórico suficiente.
-- `product_type(name)`: 3 primeiras palavras relevantes de `content.name_tokens(name)` sem números puros
-  (ex.: "piso vinilico autocolante"); `""` se não houver 2 palavras.
+- `product_type(name)`: 2 primeiras palavras relevantes de `content.name_tokens(name)` (sem palavras com dígitos
+  nem de marketing), em ordem alfabética (ex.: "piso vinilico"; "Furadeira Parafusadeira" = "Parafusadeira
+  Furadeira"); `""` se não houver 2 palavras. Ajustado depois da simulação real (seção 3).
 - `rank_modern(nodes, settings, excluded, top_ids, history, recent_types, now)` → `(candidates, selected, warning)`,
   mesmo contrato de `core.rank_offers`. Cada nó traz `_position` (posição na lista por vendas da sua fonte) e
   `_source` (ID da categoria ou "geral"), postos pela coleta.
@@ -326,12 +345,25 @@ de 2 s 720×1280 → 1080×1920 com selo (teste pulado sem ffmpeg).
 
 ## Andamento
 
+Implementado na branch `melhorias` em 09/11/2026 (commits `fa193e8`, `4193673` e seguintes). Testes: 131+ OK
+(eram 98; os antigos passam sem alteração, o que prova o Legacy intacto).
+
 | Entrega | Estado |
 |---|---|
-| M0 sondagem da API | — |
-| M1 fundação | — |
-| M2 ranking moderno | — |
-| M3 roteiro moderno | — |
-| M4 vídeo moderno | — |
-| M5 potencial de vídeo | — |
-| M6 docs e versão de teste | — |
+| M0 sondagem da API | feito — `scripts/probe_modern_api.py`; conferência real na seção 3 |
+| M1 fundação (modo, configurações, histórico de vendas, registro diário) | feito, testado; tela conferida com Playwright (desktop e 390 px) |
+| M2 ranking moderno | feito, testado; simulação real com 2 categorias (seção 3) |
+| M3 roteiro moderno | feito, testado (com modelo simulado; falta uma consulta real com o agy) |
+| M4 vídeo moderno | feito, testado; render real do selo em vídeo de exemplo (sem Flow). Worker em produção **não** atualizado |
+| M5 potencial de vídeo | feito, testado (chave desligada por padrão) |
+| M6 docs e versão de teste | feito — painel isolado `http://192.168.1.250:8792` (senha `teste-moderno`, dados fictícios) |
+
+Pendências antes do merge (decisão do usuário):
+1. Conferir o painel de teste (Preferências → Modo, cards, "Por que entrou?") e o vídeo de exemplo do selo.
+2. Confirmar D4 (registro diário nos dois modos), D5 (fidelidade só alerta) e D6 (posição/estilo do selo).
+3. Merge do PR e, depois, deploy (backup do SQLite, tag de rollback, fora das 12:00) e `worker/install.sh` na VM
+   para o worker 1.2.0 — sem isso o vídeo moderno sai como o Legacy (sem selo nem fidelidade).
+4. Primeira consulta real no Modo Moderno com o agy e um vídeo real no Flow (gasta 15 créditos — combinar antes).
+
+Conhecido e fora do escopo: em 390 px a tela de Preferências já tinha rolagem horizontal causada pelos botões
+dos modelos (`.provider-actions`), anterior a esta mudança.
