@@ -574,7 +574,7 @@ def shopee_query(settings, page, sort_type=5):
     } }""" % ", ".join(args)
 
 
-def modern_query(page, limit=50, list_type=0, sort_type=2, category=None, keyword="", fields=None):
+def modern_query(page, limit=50, list_type=0, sort_type: int | None = 2, category=None, keyword="", fields=None):
     """Modern mode only; the Legacy query (shopee_query) stays exactly as it was."""
     args = [f"listType: {list_type}"] + ([f"sortType: {sort_type}"] if sort_type is not None else [])
     if category:
@@ -673,7 +673,26 @@ def _credentials(credentials):
     return credentials
 
 
-def fetch_modern(settings, credentials, page_fetcher=fetch_product_page):
+MODERN_PAUSE = 1.0  # seconds between pages
+MODERN_ATTEMPTS = 5
+# Category queries (productCatId) answer "error [10000]: System Error" about half of the time and succeed when
+# repeated a few seconds later (seen against the real API on 09/11/2026), so that error is retried with backoff.
+
+
+def _modern_page(page_fetcher, page, credentials, query, pause):
+    """One Modern page, retried when the Shopee answers its intermittent generic system error."""
+    for attempt in range(MODERN_ATTEMPTS):
+        try:
+            return page_fetcher(None, page, credentials, query=query)
+        except ValueError as error:
+            if "[10000]" not in str(error) or attempt == MODERN_ATTEMPTS - 1:
+                raise
+            time.sleep(pause * 3 * (attempt + 1))
+        finally:
+            time.sleep(pause)
+
+
+def fetch_modern(settings, credentials, page_fetcher=fetch_product_page, pause=MODERN_PAUSE):
     """Modern mode collection: each configured category (or the general list) ordered by sales, up to
     `modern_pages` pages of 50. Each node gets its sales position (`_position`) and source (`_source`).
     A page that fails after the first one only shortens that source."""
@@ -681,33 +700,36 @@ def fetch_modern(settings, credentials, page_fetcher=fetch_product_page):
     nodes, warnings = [], []
     sources = modern.categories(settings) or [None]
     for category in sources:
-        position = 0
+        found = []
         for page in range(1, settings["modern_pages"] + 1):
             try:
-                data = page_fetcher(None, page, credentials, query=modern_query(
-                    page, category=category, keyword=settings["keyword"]))
+                data = _modern_page(page_fetcher, page, credentials, modern_query(
+                    page, category=category, keyword=settings["keyword"]), pause)
             except ValueError as error:
                 if page == 1 and len(sources) == 1:
                     raise
                 warnings.append(f"{'Categoria ' + category if category else 'Lista geral'}: página {page} falhou "
                                 f"({safe_error(error)[:120]}); seguiu com o que já tinha.")
                 break
-            for node in data["nodes"]:
-                position += 1
-                nodes.append(dict(node, _position=position, _source=category or "geral"))
+            found.extend(data["nodes"])
             if not (data.get("pageInfo") or {}).get("hasNextPage"):
                 break
+        # The position is recomputed from the sales read: the general list (no category) does not come ordered
+        # by sales even with sortType 2 (checked against the real API on 09/11/2026).
+        ranked = sorted(found, key=lambda n: -number(n.get("sales")))
+        nodes.extend(dict(n, _position=index, _source=category or "geral") for index, n in enumerate(ranked, 1))
     if not nodes:
         raise ValueError("A Shopee não devolveu anúncios para as categorias configuradas. " + " ".join(warnings))
     return dict(nodes=nodes, warnings=warnings)
 
 
-def fetch_top(settings, credentials, page_fetcher=fetch_product_page):
+def fetch_top(settings, credentials, page_fetcher=fetch_product_page, pause=MODERN_PAUSE):
     """Item IDs every affiliate already promotes (listType 2, top performing)."""
     credentials = _credentials(credentials)
     ids = set()
     for page in range(1, settings["modern_top_pages"] + 1):
-        data = page_fetcher(None, page, credentials, query=modern_query(page, list_type=2, sort_type=None, fields="itemId"))
+        data = _modern_page(page_fetcher, page, credentials,
+                            modern_query(page, list_type=2, sort_type=None, fields="itemId"), pause)
         ids.update(str(n["itemId"]) for n in data["nodes"] if n.get("itemId"))
         if not (data.get("pageInfo") or {}).get("hasNextPage"):
             break

@@ -193,16 +193,32 @@ class FetchTest(unittest.TestCase):
             count = 2 if page < 3 else 1
             return dict(nodes=[dict(itemId=f"{page}{i}") for i in range(count)], pageInfo=dict(hasNextPage=page < 3))
         result = fetch_modern(dict(MODERN, modern_categories="100715,100719", modern_pages=5), dict(app_id="1", secret="s"),
-                              page_fetcher=pages)
+                              page_fetcher=pages, pause=0)
         first = [n for n in result["nodes"] if n["_source"] == "100715"]
         self.assertEqual([n["_position"] for n in first], [1, 2, 3, 4, 5])
         self.assertEqual(len([n for n in result["nodes"] if n["_source"] == "100719"]), 2)
         self.assertIn("Categoria 100719: página 2 falhou", result["warnings"][0])
         with self.assertRaisesRegex(ValueError, "credenciais"):
             fetch_modern(MODERN, dict(app_id="", secret=""))
-        ids = fetch_top(dict(MODERN, modern_top_pages=2), dict(app_id="1", secret="s"),
+        ids = fetch_top(dict(MODERN, modern_top_pages=2), dict(app_id="1", secret="s"), pause=0,
                         page_fetcher=lambda *a, **k: dict(nodes=[dict(itemId=7), dict(itemId=8)], pageInfo=dict(hasNextPage=True)))
         self.assertEqual(ids, {"7", "8"})
+
+    def test_position_comes_from_sales_and_system_errors_are_retried(self):
+        answers = [ValueError("Shopee: error [10000]: System Error"),
+                   dict(nodes=[dict(itemId=1, sales=5), dict(itemId=2, sales=50), dict(itemId=3, sales=20)],
+                        pageInfo=dict(hasNextPage=False))]
+
+        def pages(*args, **kwargs):
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        result = fetch_modern(MODERN, dict(app_id="1", secret="s"), page_fetcher=pages, pause=0)
+        self.assertEqual([(n["itemId"], n["_position"]) for n in result["nodes"]], [(2, 1), (3, 2), (1, 3)])
+        with self.assertRaisesRegex(ValueError, "HTTP 403"):
+            fetch_modern(MODERN, dict(app_id="1", secret="s"), pause=0,
+                         page_fetcher=lambda *a, **k: (_ for _ in ()).throw(ValueError("Shopee retornou HTTP 403.")))
 
 
 class EngineModernTest(unittest.TestCase):
