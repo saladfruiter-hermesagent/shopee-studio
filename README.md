@@ -26,6 +26,7 @@ Painel pessoal para pesquisar, selecionar e acompanhar ofertas de afiliados Shop
 - Agenda diariamente em America/Sao_Paulo, recupera o horário perdido do dia ao reiniciar e tenta falhas novamente após 5 e 10 minutos.
 - Entrega incerta não é repetida automaticamente: confira o Telegram. Não há garantia de exactly-once na API do Telegram.
 - Estados da entrega por produto: aguardando vídeo, entregue, não entregue (com o motivo e "Gerar vídeo ↻"), recusado pelo Telegram (arquivo guardado, "Reenviar vídeo" sem gastar créditos), não confirmado (confira o Telegram) e bloqueado. A consulta aparece como "Aguardando vídeos" enquanto houver vídeo pendente, "Confirmado" quando todos foram entregues e "Parcial" quando algo falhou. O produto só conta como enviado depois da confirmação do Telegram; produtos aguardando vídeo ficam reservados e não entram em outra consulta.
+- **Post manual:** cada card tem o botão **"Texto e links"**, que abre a descrição (com a contagem de caracteres), os links identificados numerados com a loja e o prompt do vídeo, com **"Copiar texto"** para levar tudo de uma vez. Serve para publicar à mão quando o vídeo é baixado direto do Flow, inclusive nos cards com falha ou entrega incerta.
 - Login no painel, proteção CSRF e limitação de tentativas de login. Segredos ficam fora do Git e da imagem.
 
 ## Worker da VM
