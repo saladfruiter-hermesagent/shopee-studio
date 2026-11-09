@@ -20,9 +20,13 @@ Dois laços independentes rodam no mesmo serviço: `hermes` (tarefas de modelo) 
 - Cada etapa é informada ao painel. A etapa `approving` é registrada **antes** do clique em Aprovar; se o painel recusar (fila pausada), o worker escolhe Rejeitar. Na falha, a tela do Flow fica em `~/.cache/shopee-studio-worker/ultimo-erro.png`.
 - **Interface nova do Flow (nov/2026):** o projeto abre com uma caixa de comando única, e o modo Agente é um chip desligado por padrão. O worker:
   1. liga o chip **Agente** (`flow-agent-mode-toggle-chip`, `aria-pressed=true`) — sem ele não existe cartão de confirmação e o agente gasta créditos sozinho;
-  2. em **Configurações do agente** (botão `Configurações` dentro da caixa de comando, só no modo Agente) marca **Sempre** em *Confirmar antes de gerar* — o padrão da conta é *Nunca*, que gera e cobra sem perguntar —, fixa o vídeo em 9:16/x1 e confere o modelo (`Omni 1.1 Flash`);
+  2. em **Configurações do agente** (botão `Configurações` dentro da caixa de comando, só no modo Agente) fixa o vídeo em 9:16/x1 e confere o modelo (`Omni 1.1 Flash`). Esse painel **só fecha por `Salvar`** (não há Fechar e Escape não fecha): se ficar aberto, a caixa de comando fica oculta e nada é enviado;
   3. no painel **Gatilho de configurações** do compositor fixa 9:16, 720p, 10 s e lê o custo estimado antes de enviar; custo diferente do esperado em Preferências → `cost_mismatch`, sem gastar crédito.
   Os seletores antigos (`flow-settings-view` aberto por botão `tune`) não existem mais fora do modo Agente — era isso que fazia a fila pausar com "Modelo padrão de vídeo é ''".
+- **Confirmação de custo é escolha do usuário.** O worker lê *Confirmar antes de gerar* e **não altera**:
+  - **Sempre**: o agente pede o cartão ("custa N créditos"); o worker confere custo e 1 geração, avisa o painel (`approving`) e só então clica **Aprovar** — nunca "Sempre aprovar";
+  - **Nunca**: não existe cartão e os créditos saem **no envio**. O worker lê o custo do compositor, avisa o painel (`approving`) **antes** de enviar e segue direto para o download. `dry_run` não envia nada nesse modo.
+- **Detecção do resultado:** o cartão do chat do agente **não** serve como sinal — vídeo concluído e vídeo na fila têm o mesmo DOM (`img.video-thumbnail` é a imagem de origem). O worker considera pronto quando aparece uma **miniatura nova em `flow-video-tile`** na galeria (recarrega o projeto a cada 90 s para conferir), baixa o tile novo em 720p e trata "Falha / Algo deu errado" na resposta do agente como falha. A fila do Flow pode passar de 15 min ("alta demanda") — o prazo é 30 min.
 
 
 ### Login, 2FA ou CAPTCHA
