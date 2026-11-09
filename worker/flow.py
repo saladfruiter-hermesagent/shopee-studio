@@ -21,6 +21,8 @@ CHALLENGE = re.compile(r"n[aã]o sou um rob[oô]|unusual traffic|tr[aá]fego inc
 COST_PANEL = re.compile(r"usar\s+(\d+)\s*cr[eé]ditos", re.I)
 AUTOSTART = re.compile(r"foi agendad|agendado|na fila de processamento|aguardando na fila|iniciada|iniciei a gera|"
                        r"está sendo gerad|sendo processad", re.I)
+QUESTION = re.compile(r"voc[êe] gostaria|preciso que voc[êe]|me (forne|diga|informe|conte)|qual (v[íi]deo|imagem)|quais\b",
+                      re.I)
 
 
 class FlowError(Exception):
@@ -335,9 +337,19 @@ class Flow:
                 break
             time.sleep(1)
         item.click()
-        include = self.page.locator(".cdk-overlay-container button", has_text="Incluir no comando").first
-        include.wait_for(timeout=15000)
-        include.click()
+        # O picker novo insere a imagem direto no comando; versões anteriores pediam "Incluir no comando".
+        include = self.page.locator(".cdk-overlay-container button", has_text="Incluir no comando")
+        try:
+            include.first.wait_for(timeout=8000)
+        except Exception:
+            include = None
+        if include is not None:
+            for _ in range(3):  # O botão é re-renderizado enquanto a imagem sobe e pode sair do DOM no clique.
+                try:
+                    include.first.click(timeout=8000)
+                    break
+                except Exception:
+                    self.page.wait_for_timeout(1000)
         for _ in range(30):
             if self.page.evaluate("document.querySelectorAll('flow-creative-agent-prompt-box img, flow-base-prompt-box img').length"):
                 return
@@ -398,7 +410,9 @@ class Flow:
                     .map(b => [...b.querySelectorAll('flow-a2ui-multiple-choice, flow-a2ui-video-option')]
                         .find(e => !e.querySelector('img.video-thumbnail, video[src]')))
                     .find(e => e && (e.innerText || '').trim().length > 3);
-                return {text: last ? last.innerText : '', question: question ? question.innerText.slice(0, 300) : ''};
+                const texto = bubbles.map(b => (b.innerText || '').trim()).pop() || '';
+                return {text: last ? last.innerText : '', question: question ? question.innerText.slice(0, 300) : '',
+                        agente: texto.slice(0, 300)};
             }""", before)
             if card["text"]:
                 match = COST.search(card["text"])
@@ -412,6 +426,9 @@ class Flow:
                 raise FlowError("agent_question", "O agente do Flow fez uma pergunta em vez de pedir confirmação: "
                                                   + card["question"])
             started = bool(AUTOSTART.search(agent))
+            if not started and time.time() - start >= grace and QUESTION.search(card.get("agente", "")):
+                raise FlowError("agent_question", "O agente do Flow perguntou em vez de gerar: "
+                                                  + card["agente"][:250])
             if started and time.time() - start >= grace:
                 return None, agent.strip()[-250:]
             time.sleep(2)
