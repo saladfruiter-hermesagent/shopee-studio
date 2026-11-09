@@ -18,6 +18,12 @@ Dois laços independentes rodam no mesmo serviço: `hermes` (tarefas de modelo) 
 - Ambiente: `~/.local/share/shopee-studio-worker/venv` (Python 3.12, Playwright, faster-whisper). As versões estão fixadas no `install.sh` para reaproveitar os wheels do cache do uv; o disco da VM é pequeno.
 - Transcrição: faster-whisper `small` em CPU int8 (chave `whisper_model`). Usa ~600 MB de RAM e leva ~10 s por vídeo de 10 s.
 - Cada etapa é informada ao painel. A etapa `approving` é registrada **antes** do clique em Aprovar; se o painel recusar (fila pausada), o worker escolhe Rejeitar. Na falha, a tela do Flow fica em `~/.cache/shopee-studio-worker/ultimo-erro.png`.
+- **Interface nova do Flow (nov/2026):** o projeto abre com uma caixa de comando única, e o modo Agente é um chip desligado por padrão. O worker:
+  1. liga o chip **Agente** (`flow-agent-mode-toggle-chip`, `aria-pressed=true`) — sem ele não existe cartão de confirmação e o agente gasta créditos sozinho;
+  2. em **Configurações do agente** (botão `Configurações` dentro da caixa de comando, só no modo Agente) marca **Sempre** em *Confirmar antes de gerar* — o padrão da conta é *Nunca*, que gera e cobra sem perguntar —, fixa o vídeo em 9:16/x1 e confere o modelo (`Omni 1.1 Flash`);
+  3. no painel **Gatilho de configurações** do compositor fixa 9:16, 720p, 10 s e lê o custo estimado antes de enviar; custo diferente do esperado em Preferências → `cost_mismatch`, sem gastar crédito.
+  Os seletores antigos (`flow-settings-view` aberto por botão `tune`) não existem mais fora do modo Agente — era isso que fazia a fila pausar com "Modelo padrão de vídeo é ''".
+
 
 ### Login, 2FA ou CAPTCHA
 

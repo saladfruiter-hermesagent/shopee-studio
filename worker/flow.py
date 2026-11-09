@@ -16,6 +16,7 @@ COST = re.compile(r"(\d+)\s*cr[eé]ditos?", re.I)
 NO_CREDITS = re.compile(r"cr[eé]ditos? insuficientes|n[aã]o (tem|há) cr[eé]ditos|sem cr[eé]ditos|limite de cr[eé]ditos", re.I)
 FAILED = re.compile(r"n[aã]o (foi|consegui) (poss[ií]vel )?gerar|falh(a|ou) na gera|viola|pol[ií]tica|n[aã]o posso gerar", re.I)
 CHALLENGE = re.compile(r"n[aã]o sou um rob[oô]|unusual traffic|tr[aá]fego incomum|captcha|verify it'?s you|confirme que [eé] voc[eê]", re.I)
+COST_PANEL = re.compile(r"usar\s+(\d+)\s*cr[eé]ditos", re.I)
 
 
 class FlowError(Exception):
@@ -124,43 +125,160 @@ class Flow:
             time.sleep(1)
         raise FlowError("ui_changed", "Caixa de comando do Flow não apareceu.")
 
-    def ensure_settings(self, model):
-        """Agent settings: ask before generating (so the cost can be checked), 9:16, x1, expected model."""
-        self.page.evaluate("""() => { const t = [...document.querySelectorAll('button[aria-label="Configurações"]')]
-            .filter(b => b.innerText.trim() === 'tune').pop(); if (t) t.click(); }""")
-        self.page.wait_for_selector("flow-settings-view", timeout=15000)
-        state = self.page.evaluate("""(model) => {
-            const view = document.querySelector('flow-settings-view');
-            const radios = [...view.querySelectorAll('input.mdc-radio__native-control')];
-            const always = radios.find(r => (r.closest('mat-radio-button')?.innerText || '').trim().startsWith('Sempre'));
-            const changes = [];
-            if (!always) return {error: 'opção "Confirmar antes de gerar" não encontrada'};
-            if (!always.checked) { always.click(); changes.push('confirmar antes de gerar'); }
-            const head = [...view.querySelectorAll('*')].find(e => e.childElementCount === 0 && e.textContent.trim() === 'Padrão para geração de vídeo');
+    def open_settings(self):
+        """Abre o painel do compositor (UI nova: 'Gatilho de configurações'), se ainda não estiver aberto."""
+        opened = self.page.evaluate("""() => {
+            const panes = [...document.querySelectorAll('.cdk-overlay-container .cdk-overlay-pane')];
+            if (panes.some(p => p.offsetParent !== null && [...p.querySelectorAll('button[role=radio]')]
+                    .some(b => /^(360p|720p|4s|6s|8s|10s)$/.test(b.innerText.trim())))) return 'aberto';
+            const button = [...document.querySelectorAll('button')]
+                .find(b => b.getAttribute('aria-label') === 'Gatilho de configurações'
+                        && b.closest('flow-base-prompt-box'));
+            if (!button) return 'ausente';
+            button.click(); return 'clique'; }""")
+        if opened == "ausente":
+            raise FlowError("ui_changed", "Botão de configurações da caixa de comando não encontrado.")
+        self.settings_pane()
+
+    def settings_pane(self, timeout=20):
+        """Painel do compositor que mostra resolução/duração e o custo da geração."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            handle = self.page.evaluate_handle("""() => {
+                const panes = [...document.querySelectorAll('.cdk-overlay-container .cdk-overlay-pane')]
+                    .filter(p => p.offsetParent !== null);
+                return panes.find(p => [...p.querySelectorAll('button[role=radio]')]
+                    .some(b => /^(360p|720p|4s|6s|8s|10s)$/.test(b.innerText.trim()))) || null; }""")
+            pane = handle.as_element()
+            if pane:
+                return pane
+            time.sleep(0.5)
+        raise FlowError("ui_changed", "Painel de configurações da caixa de comando não abriu.")
+
+    def pick(self, pane, label):
+        """Marca uma opção do painel. Clica no button[role=radio] de verdade: o clique via JS é ignorado."""
+        handle = pane.evaluate_handle("""(pane, label) => [...pane.querySelectorAll('button[role=radio]')]
+            .find(b => b.innerText.trim().endsWith(label)) || null""", label)
+        button = handle.as_element()
+        if not button:
+            raise FlowError("ui_changed", f"Opção '{label}' não encontrada nas configurações do Flow.")
+        if button.get_attribute("aria-checked") == "true":
+            return
+        button.click()
+        time.sleep(0.5)
+        if button.get_attribute("aria-checked") != "true":
+            raise FlowError("ui_changed", f"O Flow não marcou a opção '{label}'.")
+
+    def agent_mode(self):
+        """Liga o modo Agente da caixa de comando: sem ele não existe cartão de confirmação de custo."""
+        for _ in range(3):
+            state = self.page.evaluate("""() => {
+                const chip = document.querySelector('flow-agent-mode-toggle-chip button');
+                const box = document.querySelector('flow-base-prompt-box');
+                return {pressed: chip ? chip.getAttribute('aria-pressed') : null,
+                        agent: !!box && [...box.querySelectorAll('button')]
+                            .some(b => b.getAttribute('aria-label') === 'Instruções para o agente')};
+            }""")
+            if state["agent"] or state["pressed"] == "true":
+                return
+            if not self.page.evaluate("""() => { const c = document.querySelector('flow-agent-mode-toggle-chip button');
+                    if (!c) return false; c.click(); return true; }"""):
+                break
+            time.sleep(3)
+        raise FlowError("ui_changed", "Não foi possível ligar o modo Agente da caixa de comando do Flow.")
+
+    def agent_settings(self):
+        """Abre o painel 'Configurações do agente neste projeto' e devolve o painel visível."""
+        handle = self.page.evaluate_handle("""() => {
+            const box = document.querySelector('flow-base-prompt-box');
+            return box ? [...box.querySelectorAll('button')]
+                .find(b => b.getAttribute('aria-label') === 'Configurações') || null : null; }""")
+        button = handle.as_element()
+        if not button:
+            raise FlowError("ui_changed", "Botão de configurações do agente não encontrado no compositor.")
+        button.click()
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            view = self.page.evaluate_handle("""() => [...document.querySelectorAll('flow-settings-view')]
+                .find(v => v.offsetParent !== null) || null""").as_element()
+            if view:
+                return view
+            time.sleep(0.5)
+        raise FlowError("ui_changed", "Painel de configurações do agente não abriu.")
+
+    def confirm_before_generating(self, view):
+        """Marca 'Sempre' em 'Confirmar antes de gerar'. Sem isso o agente gasta créditos sem perguntar."""
+        checked = view.evaluate("""(view) => {
+            const radio = [...view.querySelectorAll('input.mdc-radio__native-control')]
+                .find(r => (r.closest('mat-radio-button')?.innerText || '').trim().startsWith('Sempre'));
+            if (!radio) return 'ausente';
+            if (radio.checked) return 'ok';
+            radio.click(); return 'clicado';
+        }""")
+        if checked == "ausente":
+            raise FlowError("ui_changed", "Opção 'Confirmar antes de gerar' não encontrada.")
+        time.sleep(1)
+        if view.evaluate("""(view) => {
+            const radio = [...view.querySelectorAll('input.mdc-radio__native-control')]
+                .find(r => (r.closest('mat-radio-button')?.innerText || '').trim().startsWith('Sempre'));
+            return radio ? radio.checked : false; }"""):
+            return
+        raise FlowError("ui_changed", "O Flow não marcou 'Confirmar antes de gerar' como 'Sempre'.")
+
+    def ensure_settings(self, model, expected_cost=None):
+        """Modo Agente + 'Sempre' confirmar, vídeo 9:16 x1, modelo esperado e compositor em 720p/10 s/x1."""
+        self.agent_mode()
+        view = self.agent_settings()
+        self.confirm_before_generating(view)
+        state = view.evaluate("""(view) => {
+            const head = [...view.querySelectorAll('*')]
+                .find(e => e.childElementCount === 0 && e.textContent.trim() === 'Padrão para geração de vídeo');
             const section = head && head.closest('.settings-section');
             if (!section) return {error: 'seção de vídeo não encontrada'};
             for (const label of ['9:16', 'x1']) {
-                const toggle = [...section.querySelectorAll('[role=radio]')].find(b => b.innerText.trim().endsWith(label));
-                if (!toggle) return {error: 'opção ' + label + ' não encontrada'};
-                if (toggle.getAttribute('aria-checked') !== 'true') { toggle.click(); changes.push(label); }
+                const toggle = [...section.querySelectorAll('button[role=radio]')]
+                    .find(b => b.innerText.trim().endsWith(label));
+                if (toggle && toggle.getAttribute('aria-checked') !== 'true') toggle.click();
             }
-            const current = (section.querySelector('button[aria-label="Modelo padrão de geração de vídeo"]')?.innerText || '').replace('arrow_drop_down', '').trim();
-            return {changes, model: current};
-        }""", model)
+            return {model: (section.querySelector('button[aria-label="Modelo padrão de geração de vídeo"]')?.innerText || '')
+                .replace('arrow_drop_down', '').trim()};
+        }""")
         if state.get("error"):
             raise FlowError("ui_changed", "Configurações do agente: " + state["error"])
         if model.casefold() not in state["model"].casefold():
-            self.click_label("Voltar")
             raise FlowError("model_mismatch", f"Modelo padrão de vídeo no Flow é '{state['model']}', esperado '{model}'.")
-        if state["changes"]:
-            self.page.evaluate("() => document.querySelector('flow-settings-view button.settings-save-button')?.click()")
-            self.log("Flow: ajustado " + ", ".join(state["changes"]))
-            time.sleep(2)
-        if self.page.locator("flow-settings-view").count():  # Saving closes the view by itself.
-            try:
-                self.click_label("Voltar", timeout=3)
-            except FlowError:
-                pass
+        save = view.evaluate_handle("""(view) => [...view.querySelectorAll('button')]
+            .find(b => b.innerText.trim() === 'Salvar') || null""").as_element()
+        if not save:
+            raise FlowError("ui_changed", "Botão 'Salvar' não encontrado nas configurações do agente.")
+        try:
+            save.click(timeout=8000)
+        except Exception:  # Painel estreito às vezes reporta o botão como fora de vista.
+            view.evaluate("""(view) => [...view.querySelectorAll('button')]
+                .find(b => b.innerText.trim() === 'Salvar')?.click()""")
+        time.sleep(2)
+        for _ in range(10):
+            if not self.page.evaluate("() => [...document.querySelectorAll('flow-settings-view')].some(v => v.offsetParent !== null)"):
+                break
+            time.sleep(0.5)
+
+        self.open_settings()
+        pane = self.settings_pane()
+        for label in ("9:16", "720p", "10s"):
+            self.pick(pane, label)
+        state = pane.evaluate("""(pane) => ({
+            model: (pane.querySelector('button[aria-label="Selecionar família de modelos"]')?.innerText || '')
+                .replace('arrow_drop_down', '').trim(),
+            text: pane.innerText})""")
+        if model.casefold() not in state["model"].casefold():
+            raise FlowError("model_mismatch", f"Modelo de vídeo no compositor é '{state['model']}', esperado '{model}'.")
+        cost = COST_PANEL.search(state["text"])
+        if not cost:
+            raise FlowError("ui_changed", "O Flow não mostrou o custo da geração no compositor.")
+        if expected_cost is not None and int(cost.group(1)) != int(expected_cost):
+            raise FlowError("cost_mismatch", f"O compositor do Flow estima {cost.group(1)} créditos; o esperado era "
+                                             f"{expected_cost}. Nada foi gerado.")
+        self.page.keyboard.press("Escape")  # The panel saves as it goes; closing frees the prompt box.
         time.sleep(1)
 
     def new_session(self):
@@ -296,7 +414,7 @@ class Flow:
                  workdir, dry_run=False):
         self.open_project(project_url)
         on_stage("preparing")
-        self.ensure_settings(model)
+        self.ensure_settings(model, expected_cost)
         self.new_session()
         self.attach_image(image)
         before = self.tiles()

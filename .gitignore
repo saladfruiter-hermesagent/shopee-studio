@@ -10,3 +10,9 @@ data/
 *.jsonl
 *.zip
 .pytest_cache/
+
+# Legado da cópia local original (ver README.md): preservados no disco, fora do repositório.
+daily_shopee_top5.ps1
+docker-schedule.sh
+get_telegram_chat_id.ps1
+install_daily_task.ps1
