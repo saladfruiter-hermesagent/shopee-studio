@@ -314,6 +314,26 @@ def create_app(data_dir=None, testing=False):
             raise ValueError("Informe a consulta e o produto.")
         return jsonify(video_id=engine.videos.enqueue_manual(body["run_id"], body["key"]))
 
+    @app.get("/api/runs/<int:run_id>/products/<path:key>/no-video")
+    def no_video_preview(run_id, key):
+        from content import plain, video_caption
+        run = store.run(run_id)
+        product = next((p for p in run["products"] if p["key"] == key), None)
+        if not product or not product.get("selected"):
+            raise ValueError("Oferta não faz parte da seleção desta consulta.")
+        try:
+            text = plain(video_caption(product))
+        except Exception as error:
+            raise ValueError(str(error)) from None
+        telegram = store.telegram()
+        return jsonify(text=text, photo=bool(product.get("image")),
+                       configured=bool(telegram["token"] and telegram["chat_id"]),
+                       name=product["name"])
+
+    @app.post("/api/runs/<int:run_id>/products/<path:key>/no-video")
+    def send_no_video(run_id, key):
+        return jsonify(sent=True, **engine.send_without_video(run_id, key))
+
     @app.post("/api/videos/<int:video_id>/resend")
     def video_resend(video_id):
         engine.videos.deliver(video_id, manual=True)

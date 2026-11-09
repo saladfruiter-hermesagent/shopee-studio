@@ -682,6 +682,7 @@ class Engine:
                                      search_page(store.shopee(), keyword, page, deadline, stats))
         self.runner = runner or Runner(store)
         self.clock = time.time
+        self.image_fetcher = self.fetch_image_bytes
         self.lock = threading.Lock()
         self.heartbeat = time.time()
         self.stop = threading.Event()
@@ -851,6 +852,77 @@ class Engine:
                 raise TelegramRejected(str(result.get("description") or "Telegram recusou o envio.")[:200])
             return result["result"]["message_id"]
         raise TelegramRejected("limite de envio do Telegram")
+
+    @staticmethod
+    def fetch_image_bytes(url, timeout=20):
+        request = urllib.request.Request(url, headers={"User-Agent": "ShopeeStudio/1.0"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+
+    def send_without_video(self, run_id, key):
+        """Envia um produto ao Telegram sem vídeo: foto do anúncio + legenda (descrição e links).
+
+        Serve para publicar na hora quando o vídeo não sai (fila do Flow, teto de créditos ou falha).
+        A legenda é a mesma do vídeo (`video_caption`), com links numerados que nunca são cortados.
+        """
+        if not self.lock.acquire(blocking=False):
+            raise ValueError("Uma operação já está em andamento.")
+        try:
+            run = self.store.run(run_id)
+            product = next((p for p in run["products"] if p["key"] == key), None)
+            if not product or not product.get("selected"):
+                raise ValueError("Oferta não faz parte da seleção desta consulta.")
+            if run["delivery"] == "sent":
+                raise ValueError("Esta consulta já foi enviada ao Telegram.")
+            with self.store.db() as db:
+                row = db.execute("SELECT state FROM deliveries WHERE run_id=? AND product_key=?",
+                                 (run_id, key)).fetchone()
+            if row and row["state"] == "sent":
+                raise ValueError("Este produto já foi enviado ao Telegram.")
+            telegram = self.store.telegram()
+            if not telegram["token"] or not telegram["chat_id"]:
+                raise ValueError("Configure o Telegram em Preferências.")
+            try:
+                caption = video_caption(product)
+            except CaptionTooLong as error:
+                raise ValueError(str(error)) from None
+            payload = {"chat_id": telegram["chat_id"], "caption": caption, "parse_mode": "HTML"}
+            if telegram["thread_id"]:
+                payload["message_thread_id"] = int(telegram["thread_id"])
+            photo = None
+            if product.get("image"):
+                try:
+                    photo = self.image_fetcher(product["image"])
+                except Exception as error:  # Sem foto o envio continua: o texto é o que importa.
+                    self.store.log("error", "Foto do produto não baixou; enviando só o texto. " + safe_error(error)[:160])
+            if photo:
+                message_id = self.telegram_call(telegram["token"], "sendPhoto", payload,
+                                                upload=("photo", "produto.jpg", "image/jpeg", photo))
+            else:
+                payload.pop("caption", None)
+                payload["text"] = caption
+                payload["disable_web_page_preview"] = "true"
+                message_id = self.telegram_call(telegram["token"], "sendMessage", payload)
+            links = [dict(key=entry["key"], link=entry["link"]) for entry in (product.get("analysis") or {}).get("links") or []
+                     if entry.get("key") and entry.get("link")] or [dict(key=product["key"], link=product["link"])]
+            snapshot = dict(caption=caption, links=links, name=product["name"][:120], without_video=True,
+                            photo=bool(photo))
+            with self.store.db() as db:
+                db.execute("""INSERT INTO deliveries(run_id,product_key,state,message_id,sent_at,error,snapshot)
+                              VALUES(?,?,?,?,?,?,?)
+                              ON CONFLICT(run_id,product_key) DO UPDATE SET
+                                state='sent',message_id=excluded.message_id,sent_at=excluded.sent_at,
+                                error=NULL,snapshot=excluded.snapshot""",
+                           (run_id, key, "sent", message_id, utcnow(), None, json.dumps(snapshot)))
+                # Um vídeo ainda na fila desse produto seria outro envio: cancela só o que não começou.
+                db.execute("""UPDATE videos SET state='skipped', error='Produto enviado sem vídeo pelo painel.'
+                              WHERE run_id=? AND product_key=? AND state='queued'""", (run_id, key))
+            self.store.refresh_delivery(run_id)
+            self.store.log("info", f"{(product['name'] or 'Produto')[:40]}: enviado ao Telegram sem vídeo"
+                                   f"{'' if photo else ' (sem foto)'}.")
+            return dict(message_id=message_id, photo=bool(photo))
+        finally:
+            self.lock.release()
 
     def send(self, run_id):
         """Reserve one video per product. Nothing goes to Telegram here: each product is delivered later in a

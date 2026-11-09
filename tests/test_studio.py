@@ -160,6 +160,34 @@ class EngineTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT status FROM schedule").fetchone()[0],"done")
         self.assertEqual(self.store.runs()[0]["delivery"],"queued")
 
+    def test_send_without_video_uses_photo_with_caption_and_links(self):
+        chamadas=[]
+        self.engine.sender=lambda url,body,headers=None: chamadas.append(url) or {"ok":True,"result":{"message_id":77}}
+        self.engine.image_fetcher=lambda url: b"\xff\xd8foto"
+        run_id=self.engine.collect()
+        produto=next(p for p in self.store.run(run_id)["products"] if p["selected"])
+        resultado=self.engine.send_without_video(run_id,produto["key"])
+        self.assertEqual(resultado,{"message_id":77,"photo":True})
+        self.assertIn("sendPhoto",chamadas[0])
+        entrega=self.store.deliveries(run_id)[produto["key"]]
+        self.assertEqual(entrega["state"],"sent")
+        self.assertNotEqual(self.store.run(run_id)["delivery"],"not_sent")
+        with self.assertRaisesRegex(ValueError,"já foi enviad"):
+            self.engine.send_without_video(run_id,produto["key"])
+        self.assertEqual(len(chamadas),1)
+
+    def test_send_without_video_falls_back_to_text_when_photo_fails(self):
+        chamadas=[]
+        self.engine.sender=lambda url,body,headers=None: chamadas.append(url) or {"ok":True,"result":{"message_id":5}}
+        def sem_rede(url):
+            raise OSError("sem rede")
+        self.engine.image_fetcher=sem_rede
+        run_id=self.engine.collect()
+        produto=next(p for p in self.store.run(run_id)["products"] if p["selected"])
+        resultado=self.engine.send_without_video(run_id,produto["key"])
+        self.assertFalse(resultado["photo"])
+        self.assertIn("sendMessage",chamadas[0])
+
     def test_telegram_token_not_returned(self):
         self.assertNotIn("token",self.store.telegram_public())
         token=self.store.telegram()["token"]
