@@ -78,7 +78,35 @@ def _time(seconds):
     return f"{centis // 360000}:{centis // 6000 % 60:02d}:{centis // 100 % 60:02d}.{centis % 100:02d}"
 
 
-def ass(entries, width, height):
+BADGE_SECONDS = 3.5
+ORANGE = "&H00226BFF"     # #FF6B22 in ASS (&HAABBGGRR)
+DARK = "&H50101010"       # translucent near-black box
+
+
+def _escape(text):
+    return str(text).replace("\\", "").replace("{", "(").replace("}", ")")
+
+
+def badge_styles(width, height):
+    """Opaque-box styles of the purchase badge, above the spoken subtitle (which sits at 17% of the height)."""
+    seal, button = round(height * 0.03), round(height * 0.027)
+    return [f"Style: Selo,{FONT},{seal},&H00FFFFFF,&H00FFFFFF,{DARK},{DARK},-1,0,0,0,100,100,0,0,3,"
+            f"{round(seal * 0.3)},0,2,{round(width * 0.06)},{round(width * 0.06)},{round(height * 0.35)},1",
+            f"Style: Botao,{FONT},{button},&H00FFFFFF,&H00FFFFFF,{ORANGE},{ORANGE},-1,0,0,0,100,100,0,0,3,"
+            f"{round(button * 0.4)},0,2,{round(width * 0.04)},{round(width * 0.04)},{round(height * 0.26)},1"]
+
+
+def badge_events(duration, rating, sold):
+    """Last 3.5 s: '★ 4,9 • 206 vendidos' capsule and a pulsing 'CONFIRA NO PRODUTO MARCADO' button."""
+    start, end = max(0.0, duration - BADGE_SECONDS), max(duration, 0.1)
+    pulse = "".join(f"\\t({i * 500},{i * 500 + 250},\\fscx106\\fscy106)\\t({i * 500 + 250},{i * 500 + 500},\\fscx100\\fscy100)"
+                    for i in range(int(BADGE_SECONDS * 2)))
+    return [f"Dialogue: 1,{_time(start)},{_time(end)},Selo,,0,0,0,,{{\\q2\\fad(250,0)}}★ {_escape(rating)} • {_escape(sold)}",
+            f"Dialogue: 1,{_time(start)},{_time(end)},Botao,,0,0,0,,{{\\q2\\fad(250,0){pulse}}}CONFIRA NO PRODUTO MARCADO"]
+
+
+def ass(entries, width, height, badge=None):
+    """`badge` = dict(duration, rating, sold) adds the purchase badge (Modern mode)."""
     size = round(height * 0.047)
     margin = round(height * 0.17)  # Above the marketplace's bottom overlay (product card, buttons).
     outline = max(2, round(size * 0.09))
@@ -89,11 +117,14 @@ def ass(entries, width, height):
              "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
              "MarginR, MarginV, Encoding",
              f"Style: Fala,{FONT},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
-             f"{outline},1,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1", "",
+             f"{outline},1,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
+             *(badge_styles(width, height) if badge else []), "",
              "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     for entry in entries:
         text = entry["text"].replace("\\", "").replace("{", "(").replace("}", ")")
         lines.append(f"Dialogue: 0,{_time(entry['start'])},{_time(entry['end'])},Fala,,0,0,0,,{text}")
+    if badge:
+        lines += badge_events(badge["duration"], badge["rating"], badge["sold"])
     return "\n".join(lines) + "\n"
 
 
@@ -139,8 +170,54 @@ def burn(source, entries, destination, workdir):
     return probe(destination)
 
 
-def subtitle_video(source, narration, destination, workdir, model_size="small", transcriber=transcribe):
-    """Return metadata; without detected speech the video is copied unchanged and flagged."""
+def finish_command(source, destination, subtitle_name, width, height, audio):
+    """Modern mode render: blurred fill + centred clip at width x height, 30 fps, subtitles and badge burned in,
+    loudness-normalised AAC audio."""
+    graph = (f"[0:v]split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
+             f"crop={width}:{height},boxblur=20:2[blur];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[clip];"
+             f"[blur][clip]overlay=(W-w)/2:(H-h)/2,fps=30,setsar=1,ass={subtitle_name}[v]")
+    command = ["ffmpeg", "-y", "-v", "error", "-i", str(source), "-filter_complex", graph, "-map", "[v]",
+               "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
+    if audio:
+        command += ["-map", "0:a:0", "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+    return command + ["-movflags", "+faststart", str(Path(destination).resolve())]
+
+
+def finish_video(source, narration, destination, workdir, finish, model_size="small", transcriber=transcribe):
+    """Modern mode: subtitles + purchase badge + 1080x1920, even when no speech was detected."""
+    info = probe(source)
+    words = transcriber(source, model_size) if info["audio"] else []
+    entries = cues(align_to_script(words, narration)) if words else []
+    width, height = (finish.get("size") or [info["width"], info["height"]])[:2]
+    seal = finish.get("badge") or {}
+    badge = dict(duration=info["duration"], rating=seal["rating"], sold=seal["sold"]) if seal.get("rating") else None
+    subtitle = Path(workdir) / "legenda.ass"
+    subtitle.write_text(ass(entries, width, height, badge), encoding="utf-8")
+    subprocess.run(finish_command(source, destination, subtitle.name, width, height, info["audio"]),
+                   cwd=workdir, check=True, timeout=600, capture_output=True)
+    return dict(probe(destination), subtitles=len(entries), transcript=" ".join(e["text"] for e in entries),
+                badge=bool(badge))
+
+
+def extract_frames(source, folder, width=360):
+    """Three JPEG frames (20%, 50%, 80% of the clip) for the fidelity check."""
+    duration = probe(source)["duration"]
+    frames = []
+    for index, share in enumerate((0.2, 0.5, 0.8), 1):
+        target = Path(folder) / f"quadro{index}.jpg"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{duration * share:.2f}", "-i", str(source),
+                        "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "5", str(target)],
+                       check=True, timeout=60, capture_output=True)
+        if target.exists() and target.stat().st_size:
+            frames.append(target)
+    return frames
+
+
+def subtitle_video(source, narration, destination, workdir, model_size="small", transcriber=transcribe, finish=None):
+    """Return metadata; without detected speech the video is copied unchanged and flagged.
+    `finish` (Modern mode) also burns the purchase badge and scales to 1080x1920."""
+    if finish:
+        return finish_video(source, narration, destination, workdir, finish, model_size, transcriber)
     info = probe(source)
     words = transcriber(source, model_size) if info["audio"] else []
     entries = cues(align_to_script(words, narration)) if words else []

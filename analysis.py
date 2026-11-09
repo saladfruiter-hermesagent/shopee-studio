@@ -3,9 +3,10 @@ import math
 import re
 import time
 
-from content import (CAPTION_LIMIT, MAX_LINKS, NARRATION_MAX_WORDS, STOPWORDS, VIDEO_SECONDS, caption_text,
-                     clean_name, copy_problems, fallback_copy, fallback_script, name_tokens, script_problems,
-                     strip_accents, text_length, video_prompt)
+from content import (CAPTION_LIMIT, CLOSING, FORMATS, MAX_LINKS, MODERN_NARRATION_WORDS, NARRATION_MAX_WORDS,
+                     STOPWORDS, VIDEO_SECONDS, caption_text, clean_name, copy_problems, fallback_copy, fallback_script,
+                     modern_fallback_script, modern_script_problems, name_tokens, script_problems, strip_accents,
+                     text_length, video_prompt)
 
 VERDICTS = {"match", "uncertain", "incompatible"}
 SCHEMA = {
@@ -344,7 +345,23 @@ CANDIDATOS:
 </dados>"""
 
 
-def build_prompt(product, candidates):
+def creative_rules(creative):
+    """Modern mode block of TAREFA 3: required format, hands only, closing and varied openings."""
+    if not creative:
+        return ""
+    banned = ", ".join(f'"{o}"' for o in creative.get("openings") or []) or "nenhuma"
+    low, high = MODERN_NARRATION_WORDS
+    return f"""
+REGRAS DO MODO MODERNO PARA O ROTEIRO:
+- Formato obrigatório deste vídeo: {FORMATS[creative["format"]]}
+- Só mãos em cena (visão em primeira pessoa ou close): nenhum rosto, sorriso ou pessoa de frente para a câmera.
+- "narration" com {low} a {high} palavras; a última frase cita "{CLOSING}" (ex.: "Toque no {CLOSING}.").
+- Não comece a narração com "Olha" nem "Gente", nem com estas aberturas já usadas: {banned}.
+- Todo número falado tem de aparecer no nome do anúncio; na dúvida, não fale números.
+"""
+
+
+def build_prompt(product, candidates, creative=None):
     return f"""Você analisa anúncios da Shopee e escreve roteiros de vídeos curtos de venda.
 {DATA_RULES}
 
@@ -364,7 +381,7 @@ a tocar no produto do vídeo). Descreva só cenas filmáveis, em português, at�
 textos, ícones, setas nem elementos gráficos na tela: a legenda é aplicada depois.
 "narration": a fala completa em português do Brasil, até {NARRATION_MAX_WORDS} palavras, natural para {VIDEO_SECONDS} s.
 Preserve a aparência do produto. Não invente atributos, acessórios, resultados, descontos, escassez ou depoimentos.
-
+{creative_rules(creative)}
 Responda somente com o JSON do schema."""
 
 
@@ -394,12 +411,15 @@ def _equivalent_problems(output):
     return []
 
 
-def make_check(candidates):
+def make_check(candidates, product=None, creative=None):
+    """`creative` (Modern mode) adds the hands-only, closing, opening and number rules."""
     def check(output):
         if not isinstance(output, dict):
             return ["resposta não é um objeto JSON"]
         problems = copy_problems(output.get("description"), output.get("hashtags"))
         problems += script_problems(output)
+        if creative:
+            problems += modern_script_problems(output, product["name"], creative.get("openings") or ())
         return problems + _equivalent_problems(output)
     return check
 
@@ -432,25 +452,32 @@ def unreviewed(candidates, reason, round_number):
     return [dict(c, verdict="uncertain", reason=reason, round=round_number) for c in candidates]
 
 
-def finalize(product, candidates, output, provider, attempts, notes):
+def _modern_fields(creative):
+    return dict(format=creative["format"]) if creative else {}
+
+
+def finalize(product, candidates, output, provider, attempts, notes, creative=None):
     reviewed = review(product, candidates, output, 1)
     description, hashtags = output["description"].strip(), [t.strip() for t in output["hashtags"]]
     script = {k: output[k].strip() for k in ("hook", "demo", "benefit", "cta", "narration")}
     caption = caption_text(description, hashtags)
+    prompt = video_prompt(script, True, creative["format"]) if creative else video_prompt(script)
     return dict(status="ok", provider=provider, attempts=attempts, notes=notes,
                 description=description, hashtags=hashtags, caption=caption, caption_length=text_length(caption),
-                script=script, prompt=video_prompt(script), narration=script["narration"],
-                equivalents=reviewed, links=links_for(product, reviewed))
+                script=script, prompt=prompt, narration=script["narration"],
+                equivalents=reviewed, links=links_for(product, reviewed), **_modern_fields(creative))
 
 
-def fallback(product, candidates, reason, attempts, notes):
-    copy, script = fallback_copy(product), fallback_script(product)
+def fallback(product, candidates, reason, attempts, notes, creative=None):
+    copy = fallback_copy(product)
+    script = modern_fallback_script(product) if creative else fallback_script(product)
+    prompt = video_prompt(script, True, creative["format"]) if creative else video_prompt(script)
     caption = caption_text(**copy)
     return dict(status="fallback", provider="", attempts=attempts, notes=notes + [reason],
                 description=copy["description"], hashtags=copy["hashtags"], caption=caption,
-                caption_length=text_length(caption), script=script, prompt=video_prompt(script),
+                caption_length=text_length(caption), script=script, prompt=prompt,
                 narration=script["narration"], links=links_for(product, []),
-                equivalents=unreviewed(candidates, "Não validado: nenhum modelo respondeu.", 1))
+                equivalents=unreviewed(candidates, "Não validado: nenhum modelo respondeu.", 1), **_modern_fields(creative))
 
 
 def links_for(product, reviewed):

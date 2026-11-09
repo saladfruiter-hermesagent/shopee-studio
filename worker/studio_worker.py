@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 CONFIG = Path.home() / ".config" / "shopee-studio-worker" / "config.json"
 WORK = Path.home() / ".cache" / "shopee-studio-worker"
 IMAGE_HOSTS = ("susercontent.com", "shopee.com.br", "shopee.com", "img.shopee")
@@ -63,7 +63,8 @@ def call(url, token, path, payload, timeout=30):
 def save_image(image, folder):
     name = "".join(c for c in str(image.get("name", "img")) if c.isalnum())[:12] or "img"
     if image.get("data"):
-        data, ext = base64.b64decode(image["data"]), ".png"
+        data = base64.b64decode(image["data"])
+        ext = ".jpg" if data[:2] == b"\xff\xd8" else ".png"  # fidelity frames are JPEG
     else:
         parsed = urlparse(image.get("url", ""))
         if parsed.scheme != "https" or not any((parsed.hostname or "").endswith(h) for h in IMAGE_HOSTS):
@@ -156,9 +157,18 @@ def run_video(config, task, worker_id):
             except Exception:
                 flow.screenshot(WORK / "ultimo-erro.png")
                 raise
+        finish = payload.get("finish") or None  # Modern mode: badge, 1080x1920 and fidelity frames
+        if finish and finish.get("frames"):
+            try:
+                frames = subtitles.extract_frames(raw, folder)
+                call(url, token, f"/api/worker/tasks/{task['id']}/frames",
+                     dict(worker_id=worker_id, frames=[base64.b64encode(f.read_bytes()).decode() for f in frames]))
+            except Exception as error:  # The fidelity check is advisory: the video still goes on.
+                log(f"Tarefa {task['id']}: quadros para a fidelidade não enviados ({error})")
         stage("subtitling")
         final = folder / "final.mp4"
-        meta = subtitles.subtitle_video(raw, payload.get("narration", ""), final, folder, config["whisper_model"])
+        meta = subtitles.subtitle_video(raw, payload.get("narration", ""), final, folder, config["whisper_model"],
+                                        finish=finish)
         if not 6 <= meta["duration"] <= 20 or meta["height"] <= meta["width"]:
             raise FlowError("render_failed", f"Vídeo fora do esperado: {meta['width']}x{meta['height']}, "
                                              f"{meta['duration']:.1f} s.", charged=True)

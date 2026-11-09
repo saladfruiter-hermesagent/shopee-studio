@@ -4,6 +4,7 @@ import hmac
 import json
 import math
 import os
+import random
 import re
 import secrets
 import sqlite3
@@ -18,8 +19,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import analysis
+import modern
 import video as video_module
-from content import CaptionTooLong, plain, video_caption
+from content import CaptionTooLong, opening, pick_format, plain, video_caption
 from llm import LLM_DEFAULTS, ModelError, Runner, WORKER_ONLINE_SECONDS, public_llm, validate_llm
 
 TZ = ZoneInfo("America/Sao_Paulo")
@@ -30,7 +32,16 @@ DEFAULTS = dict(keyword="", min_rating=4.5, relax_rating=False,
                 schedule_time="12:00", schedule_enabled=True, auto_send=False,
                 max_pages=100, page_limit=20,
                 video_enabled=True, video_daily_credits=75, video_cost=15, video_model="Omni 1.1 Flash",
-                flow_project_url="")
+                flow_project_url="",
+                # "legacy" = behaviour before the Modern mode; "modern" = PLANO_MODO_MODERNO.md.
+                mode="legacy",
+                modern_categories="", modern_name_filter="", modern_pages=10,
+                modern_min_price=80.0, modern_max_price=1500.0, modern_min_rating=4.5,
+                modern_min_sales=50, modern_max_sales=5000, modern_min_discount=0,
+                modern_showcase_cut=30, modern_exclude_top=True, modern_top_pages=20,
+                modern_type_days=7, modern_video_potential=False, modern_fidelity_min=6,
+                sales_snapshot=True, snapshot_time="07:00")
+MODES = {"legacy", "modern"}
 DECISIONS = {"new", "planned", "published", "discarded"}
 API = "https://open-api.affiliate.shopee.com.br/graphql"
 
@@ -96,10 +107,34 @@ def validate_settings(payload, existing=None):
         raise ValueError("URL do projeto do Flow inválida (https://flow.google.com/project/...).")
     if len(result["keyword"]) > 120:
         raise ValueError("Palavra-chave: máximo de 120 caracteres.")
-    try:
-        datetime.strptime(result["schedule_time"], "%H:%M")
-    except ValueError:
-        raise ValueError("Horário inválido. Use HH:MM.") from None
+    for key in ("schedule_time", "snapshot_time"):
+        try:
+            datetime.strptime(result[key], "%H:%M")
+        except ValueError:
+            raise ValueError("Horário inválido. Use HH:MM.") from None
+    if result["mode"] not in MODES:
+        raise ValueError("Modo inválido: escolha Legacy ou Moderno.")
+    ids = [c.strip() for c in result["modern_categories"].split(",") if c.strip()]
+    if len(ids) > 20 or not all(re.fullmatch(r"\d{4,9}", c) for c in ids):
+        raise ValueError("Categorias: até 20 IDs numéricos separados por vírgula (ex.: 100715,100719).")
+    result["modern_categories"] = ",".join(dict.fromkeys(ids))
+    result["modern_name_filter"] = result["modern_name_filter"].strip()
+    if len(result["modern_name_filter"]) > 200:
+        raise ValueError("Filtro de nome: máximo de 200 caracteres.")
+    for key in ("modern_min_price", "modern_max_price"):
+        if result[key] < 0:
+            raise ValueError("Modo Moderno: preço não pode ser negativo.")
+    if result["modern_max_price"] and result["modern_max_price"] < result["modern_min_price"]:
+        raise ValueError("Modo Moderno: preço máximo menor que o mínimo.")
+    if not 0 <= result["modern_min_rating"] <= 5:
+        raise ValueError("Modo Moderno: nota mínima de 0 a 5.")
+    for key, low, high in (("modern_pages", 1, 50), ("modern_top_pages", 1, 50), ("modern_min_sales", 0, 100000),
+                           ("modern_max_sales", 0, 10000000), ("modern_min_discount", 0, 90),
+                           ("modern_showcase_cut", 0, 500), ("modern_type_days", 0, 60), ("modern_fidelity_min", 0, 10)):
+        if not low <= result[key] <= high:
+            raise ValueError(f"{key}: use {low} a {high}.")
+    if result["modern_max_sales"] and result["modern_max_sales"] < result["modern_min_sales"]:
+        raise ValueError("Modo Moderno: teto de vendas menor que o mínimo.")
     if not 0 <= result["fallback_rating"] <= result["min_rating"] <= 5:
         raise ValueError("Notas devem estar entre 0 e 5; a alternativa não pode superar a mínima.")
     for key in ("min_price", "max_price", "min_sales", "min_commission"):
@@ -162,6 +197,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS deliveries (
                     run_id INTEGER, product_key TEXT, state TEXT, photo_message_id INTEGER,
                     text_message_id INTEGER, sent_at TEXT, error TEXT, PRIMARY KEY(run_id, product_key));
+                CREATE TABLE IF NOT EXISTS sales_history (
+                    item_id TEXT, day TEXT, sales INTEGER, PRIMARY KEY(item_id, day));
             """)
             # Additive migrations only: old rows keep their data and stay readable.
             for table, column, kind in (("runs", "progress", "TEXT"), ("videos", "snapshot", "TEXT"),
@@ -362,6 +399,65 @@ class Store:
                 SELECT r.started,o.body FROM offers o JOIN runs r ON r.id=o.run_id
                 WHERE o.product_key=? ORDER BY r.id DESC LIMIT 60""", (key,))]
 
+    def flag(self, key, value=None):
+        with self.db() as db:
+            if value is not None:
+                db.execute("INSERT INTO flags VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                           (key, json.dumps(value)))
+                return value
+            row = db.execute("SELECT value FROM flags WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def record_sales(self, nodes, day, keep_days=60):
+        """Daily sales per item (the base of the Modern mode trend). The latest reading of the day wins."""
+        rows = {}
+        for node in nodes:
+            item = str(node.get("itemId") or "")
+            if item and node.get("sales") is not None:
+                rows[item] = max(0, int(number(node.get("sales"))))
+        oldest = (datetime.fromisoformat(day) - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+        with self.db() as db:
+            db.executemany("INSERT OR REPLACE INTO sales_history VALUES(?,?,?)", [(i, day, s) for i, s in rows.items()])
+            db.execute("DELETE FROM sales_history WHERE day<?", (oldest,))
+        return len(rows)
+
+    def sales_history(self, item_ids):
+        result = {}
+        ids = sorted({str(i) for i in item_ids if i})
+        with self.db() as db:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                for row in db.execute(f"SELECT item_id,day,sales FROM sales_history WHERE item_id IN ({','.join('?' * len(chunk))}) "
+                                      "ORDER BY day", chunk):
+                    result.setdefault(row[0], []).append((row[1], row[2]))
+        return result
+
+    def recent_types(self, days):
+        """Product types delivered or reserved in the last `days` days (Modern mode: one type per week)."""
+        if not days:
+            return set()
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self.db() as db:
+            rows = db.execute("""SELECT d.snapshot FROM deliveries d JOIN runs r ON r.id=d.run_id
+                                 WHERE d.snapshot IS NOT NULL AND d.state IN ('pending','sending','sent','unknown','refused')
+                                   AND r.started>=?""", (since,)).fetchall()
+        return {kind for kind in (modern.product_type(json.loads(r[0]).get("name") or "") for r in rows) if kind}
+
+    def recent_creative(self, limit=8):
+        """Formats and narration openings of the latest Modern analyses, newest first."""
+        formats, openings = [], []
+        with self.db() as db:
+            rows = db.execute("SELECT body FROM offers WHERE selected=1 ORDER BY run_id DESC LIMIT 200").fetchall()
+        for row in rows:
+            analysis_ = json.loads(row[0]).get("analysis") or {}
+            if not analysis_.get("format"):
+                continue
+            formats.append(analysis_["format"])
+            openings.append(opening(analysis_.get("narration") or ""))
+            if len(formats) >= limit:
+                break
+        return dict(formats=formats, openings=[o for o in openings if o])
+
     def llm(self):
         with self.db() as db:
             return validate_llm({}, json.loads(db.execute("SELECT body FROM llm WHERE id=1").fetchone()[0]))
@@ -478,6 +574,25 @@ def shopee_query(settings, page, sort_type=5):
     } }""" % ", ".join(args)
 
 
+def modern_query(page, limit=50, list_type=0, sort_type=2, category=None, keyword="", fields=None):
+    """Modern mode only; the Legacy query (shopee_query) stays exactly as it was."""
+    args = [f"listType: {list_type}"] + ([f"sortType: {sort_type}"] if sort_type is not None else [])
+    if category:
+        args.append(f"productCatId: {int(category)}")
+    if keyword:
+        args.append("keyword: " + json.dumps(keyword, ensure_ascii=False))
+    args += [f"page: {page}", f"limit: {limit}"]
+    return """query { productOfferV2(%s) {
+      nodes { %s }
+      pageInfo { page hasNextPage }
+    } }""" % (", ".join(args), fields or MODERN_FIELDS)
+
+
+MODERN_FIELDS = ("itemId shopId productName shopName offerLink productLink imageUrl price priceMin priceMax "
+                 "commission commissionRate sellerCommissionRate appExistRate appNewRate ratingStar sales "
+                 "priceDiscountRate productCatIds periodStartTime periodEndTime")
+
+
 def request_json(url, body, headers=None, timeout=25):
     request = urllib.request.Request(url, data=body, method="POST",
                                     headers={"Content-Type": "application/json", **(headers or {})})
@@ -485,11 +600,12 @@ def request_json(url, body, headers=None, timeout=25):
         return json.load(response)
 
 
-def fetch_product_page(settings, page, credentials, sort_type=5, deadline=None, stats=None):
+def fetch_product_page(settings, page, credentials, sort_type=5, deadline=None, stats=None, query=None):
     """One logical page request. `deadline` bounds the request, its retries and their waits;
-    `stats["http_attempts"]` counts every HTTP attempt, so retries can be reported apart from pages."""
+    `stats["http_attempts"]` counts every HTTP attempt, so retries can be reported apart from pages.
+    `query` replaces the Legacy query (Modern mode)."""
     app_id, secret = credentials["app_id"], credentials["secret"]
-    body = json.dumps({"query": shopee_query(settings, page, sort_type)},
+    body = json.dumps({"query": query or shopee_query(settings, page, sort_type)},
                       ensure_ascii=False, separators=(",", ":")).encode()
     for attempt in range(3):
         timeout = 25
@@ -549,6 +665,53 @@ def fetch_offer_pages(settings, credentials=None, sort_type=5,
 def fetch_offers(settings, credentials=None):
     """Rank a bounded product sample; the full Shopee catalog cannot be paginated in one run."""
     return fetch_offer_pages(settings, credentials, sort_type=5, require_complete=False)
+
+
+def _credentials(credentials):
+    if not credentials or not credentials.get("app_id") or not credentials.get("secret"):
+        raise ValueError("Configure as credenciais da Shopee em Preferências.")
+    return credentials
+
+
+def fetch_modern(settings, credentials, page_fetcher=fetch_product_page):
+    """Modern mode collection: each configured category (or the general list) ordered by sales, up to
+    `modern_pages` pages of 50. Each node gets its sales position (`_position`) and source (`_source`).
+    A page that fails after the first one only shortens that source."""
+    credentials = _credentials(credentials)
+    nodes, warnings = [], []
+    sources = modern.categories(settings) or [None]
+    for category in sources:
+        position = 0
+        for page in range(1, settings["modern_pages"] + 1):
+            try:
+                data = page_fetcher(None, page, credentials, query=modern_query(
+                    page, category=category, keyword=settings["keyword"]))
+            except ValueError as error:
+                if page == 1 and len(sources) == 1:
+                    raise
+                warnings.append(f"{'Categoria ' + category if category else 'Lista geral'}: página {page} falhou "
+                                f"({safe_error(error)[:120]}); seguiu com o que já tinha.")
+                break
+            for node in data["nodes"]:
+                position += 1
+                nodes.append(dict(node, _position=position, _source=category or "geral"))
+            if not (data.get("pageInfo") or {}).get("hasNextPage"):
+                break
+    if not nodes:
+        raise ValueError("A Shopee não devolveu anúncios para as categorias configuradas. " + " ".join(warnings))
+    return dict(nodes=nodes, warnings=warnings)
+
+
+def fetch_top(settings, credentials, page_fetcher=fetch_product_page):
+    """Item IDs every affiliate already promotes (listType 2, top performing)."""
+    credentials = _credentials(credentials)
+    ids = set()
+    for page in range(1, settings["modern_top_pages"] + 1):
+        data = page_fetcher(None, page, credentials, query=modern_query(page, list_type=2, sort_type=None, fields="itemId"))
+        ids.update(str(n["itemId"]) for n in data["nodes"] if n.get("itemId"))
+        if not (data.get("pageInfo") or {}).get("hasNextPage"):
+            break
+    return ids
 
 
 def rank_offers(nodes, settings, excluded=None, now=None):
@@ -673,10 +836,46 @@ def multipart(fields, name, filename, kind, data):
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
+POTENTIAL_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
+    "id": {"type": "string"}, "score": {"type": "integer"}, "reason": {"type": "string"}},
+    "required": ["id", "score", "reason"]}}}, "required": ["items"]}
+
+
+def potential_prompt(products):
+    lines = [f"C{i}: {p['name']} | preço: R$ {p['price']:.2f} | imagem C{i}" for i, p in enumerate(products, 1)]
+    return f"""Você avalia se anúncios da Shopee rendem um bom vídeo curto de venda (10 s, vertical, só mãos em cena).
+{analysis.DATA_RULES}
+
+<dados>
+{chr(10).join(lines)}
+</dados>
+
+Para cada anúncio (id C1, C2...), dê "score" de 0 a 10: 10 = demonstração visível em segundos, resultado claro e
+produto reconhecível na foto; 0 = nada a mostrar em vídeo (ex.: item genérico, resultado invisível, peça de reposição).
+"reason": uma frase curta. Responda somente com o JSON do schema."""
+
+
+def potential_check(count):
+    def check(output):
+        items = output.get("items") if isinstance(output, dict) else None
+        if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+            return ["items deve ser uma lista de objetos"]
+        if any(isinstance(i.get("score"), bool) or not isinstance(i.get("score"), int) or not 0 <= i["score"] <= 10
+               for i in items):
+            return ["score deve ser um inteiro de 0 a 10"]
+        return []
+    return check
+
+
 class Engine:
-    def __init__(self, store, fetcher=None, sender=request_json, searcher=None, runner=None):
+    def __init__(self, store, fetcher=None, sender=request_json, searcher=None, runner=None,
+                 modern_fetcher=None, top_fetcher=None):
         self.store, self.sender = store, sender
         self.fetcher = fetcher or (lambda settings: fetch_offers(settings, store.shopee()))
+        # Modern mode: sales-ordered pages per category, and the top-affiliate list (cached for the day).
+        self.modern_fetcher = modern_fetcher or (lambda settings: fetch_modern(settings, store.shopee()))
+        self.top_fetcher = top_fetcher or (lambda settings: fetch_top(settings, store.shopee()))
+        self.rng = random.Random()
         # searcher(keyword, page, deadline, stats) -> {"nodes": [...], "pageInfo": {...}}
         self.searcher = searcher or (lambda keyword, page, deadline=None, stats=None:
                                      search_page(store.shopee(), keyword, page, deadline, stats))
@@ -699,8 +898,11 @@ class Engine:
             self.store.log("info", f"Consulta #{run_id} iniciada ({source}).")
             try:
                 excluded = self.store.exclusions()
-                nodes = self.fetcher(settings)
-                candidates, selected, warning = rank_offers(nodes, settings, excluded)
+                if settings["mode"] == "modern":
+                    nodes, candidates, selected, warning = self.collect_modern(settings, excluded)
+                else:
+                    nodes = self.fetcher(settings)
+                    candidates, selected, warning = rank_offers(nodes, settings, excluded)
                 with self.store.db() as db:
                     for product in candidates:
                         db.execute("INSERT INTO offers VALUES(?,?,?,?)", (run_id, product["key"], json.dumps(product), int(product["key"] in selected)))
@@ -709,12 +911,20 @@ class Engine:
                 chosen = [p for p in candidates if p["key"] in selected]
                 # Equivalents never repeat a sent offer, another selected product or another product's link.
                 used = set(excluded) | selected
+                recent = self.store.recent_creative(8) if settings["mode"] == "modern" else None
                 for index, product in enumerate(chosen, 1):
                     self.store.set_progress(run_id, "analyzing", f"Produto {index}/{len(chosen)}: equivalentes e conteúdo")
                     self.heartbeat = time.time()
+                    creative = None
+                    if recent is not None:  # Modern mode: a new format and opening for each video.
+                        creative = dict(format=pick_format(recent["formats"], self.rng), openings=recent["openings"][:8])
                     product["analysis"] = self.analyze(product, settings, used, progress=lambda number, count, index=index: (
                         self.store.set_progress(run_id, "analyzing", f"Produto {index}/{len(chosen)}: rodada {number} "
-                                                                    f"de equivalentes ({count} candidato(s))")))
+                                                                    f"de equivalentes ({count} candidato(s))")),
+                        creative=creative)
+                    if recent is not None:
+                        recent["formats"].insert(0, product["analysis"].get("format"))
+                        recent["openings"].insert(0, opening(product["analysis"].get("narration") or ""))
                     used.update(link["key"] for link in product["analysis"]["links"])
                     self.store.save_analysis(run_id, product)
                 with self.store.db() as db:
@@ -732,7 +942,78 @@ class Engine:
         finally:
             self.lock.release()
 
-    def analyze(self, product, settings, excluded, progress=None):
+    def top_ids(self, settings):
+        """Top-affiliate item IDs, fetched once a day (same page count) and kept in `flags`."""
+        day = datetime.now(TZ).strftime("%Y-%m-%d")
+        cached = self.store.flag("top_affiliates") or {}
+        if cached.get("day") == day and cached.get("pages") == settings["modern_top_pages"]:
+            return set(cached["ids"])
+        ids = self.top_fetcher(settings)
+        self.store.flag("top_affiliates", dict(day=day, pages=settings["modern_top_pages"], ids=sorted(ids)))
+        return set(ids)
+
+    def collect_modern(self, settings, excluded):
+        fetched = self.modern_fetcher(settings)
+        nodes, warnings = fetched["nodes"], list(fetched.get("warnings") or [])
+        self.store.record_sales(nodes, datetime.now(TZ).strftime("%Y-%m-%d"))
+        top = set()
+        if settings["modern_exclude_top"]:
+            try:
+                top = self.top_ids(settings)
+            except Exception as error:  # Without the list nothing is excluded by it; the run goes on.
+                warnings.append(f"Top de afiliados indisponível ({safe_error(error)[:120]}); nenhum item foi excluído por ele.")
+        history = self.store.sales_history({str(n.get("itemId")) for n in nodes})
+        candidates, selected, warning = modern.rank_modern(nodes, settings, excluded, top, history,
+                                                           self.store.recent_types(settings["modern_type_days"]))
+        warnings.append(warning)
+        if settings["modern_video_potential"]:
+            selected, note = self.video_potential(candidates, settings, selected)
+            warnings.append(note)
+        return nodes, candidates, selected, " ".join(w for w in warnings if w)
+
+    def video_potential(self, candidates, settings, selected):
+        """One model call rates the video potential (0-10) of the best candidates; failure keeps the score order."""
+        pool = modern.potential_pool(candidates, settings)
+        images = [dict(name=f"C{i}", url=p["image"]) for i, p in enumerate(pool, 1) if p.get("image")]
+        try:
+            output, provider, _ = self.runner.run(potential_prompt(pool), POTENTIAL_SCHEMA, images, potential_check(len(pool)),
+                                                  log=lambda m: self.store.log("info", "Modelo: " + m),
+                                                  deadline=time.time() + 300)
+        except ModelError as error:
+            return selected, f"Potencial de vídeo não avaliado ({safe_error(error)[:150]}); seleção só pela pontuação."
+        verdicts = {}
+        for entry in output["items"]:
+            ident = str(entry.get("id", "")).strip().upper()
+            if ident.startswith("C") and ident[1:].isdigit() and 1 <= int(ident[1:]) <= len(pool):
+                verdicts[pool[int(ident[1:]) - 1]["key"]] = (entry["score"], str(entry.get("reason") or "")[:200])
+        modern.apply_potential(candidates, verdicts)
+        return set(modern.select(candidates, settings)), f"Potencial de vídeo avaliado em {len(verdicts)} anúncio(s) ({provider})."
+
+    def snapshot_sales(self, now):
+        """Daily sales reading for the Modern mode trend; runs in both modes when enabled (read-only API calls)."""
+        settings = self.store.settings()
+        credentials = self.store.shopee()
+        if not settings["sales_snapshot"] or now.strftime("%H:%M") < settings["snapshot_time"]:
+            return
+        if not credentials.get("app_id") or not credentials.get("secret"):
+            return
+        day = now.strftime("%Y-%m-%d")
+        state = self.store.flag("sales_snapshot") or {}
+        attempts = state.get("attempts", 0) if state.get("day") == day else 0
+        if state.get("day") == day and (state.get("status") == "done" or attempts >= 3
+                                        or state.get("next_retry", 0) > now.timestamp()):
+            return
+        try:
+            count = self.store.record_sales(self.modern_fetcher(settings)["nodes"], day)
+        except Exception as error:
+            self.store.flag("sales_snapshot", dict(day=day, status="failed", attempts=attempts + 1,
+                                                   next_retry=now.timestamp() + 1800))
+            self.store.log("error", f"Registro diário de vendas, tentativa {attempts + 1}/3: {safe_error(error)}")
+            return
+        self.store.flag("sales_snapshot", dict(day=day, status="done", attempts=attempts + 1, items=count))
+        self.store.log("info", f"Registro diário de vendas: {count} anúncio(s) gravados.")
+
+    def analyze(self, product, settings, excluded, progress=None, creative=None):
         """Content once, then equivalence rounds over new candidates until five matches, the candidate
         budget, the round limit, the global deadline or the end of the results."""
         config = self.store.llm()
@@ -762,16 +1043,16 @@ class Engine:
         round_started = self.clock()
         try:
             output, provider, attempts = self.runner.run(
-                analysis.build_prompt(product, batch), analysis.SCHEMA, analysis.images_for(product, batch),
-                analysis.make_check(batch), log=log, deadline=deadline)
+                analysis.build_prompt(product, batch, creative), analysis.SCHEMA, analysis.images_for(product, batch),
+                analysis.make_check(batch, product, creative), log=log, deadline=deadline)
         except ModelError as error:
             self.store.log("error", f"{product['name'][:60]}: {safe_error(error)}")
-            result = analysis.fallback(product, batch, safe_error(error)[:400], [], notes)
+            result = analysis.fallback(product, batch, safe_error(error)[:400], [], notes, creative)
             rounds.append(round_entry(1, batch, result["equivalents"], self.clock() - round_started,
                                       error=safe_error(error)[:200]))
             result["search"] = report("falha do modelo" if size else "busca desativada", result["equivalents"])
             return result
-        result = analysis.finalize(product, batch, output, provider, attempts, notes)
+        result = analysis.finalize(product, batch, output, provider, attempts, notes, creative)
         equivalents = result["equivalents"]
         rounds.append(round_entry(1, batch, equivalents, self.clock() - round_started, provider))
         stopped = None if size else "busca desativada"
@@ -991,6 +1272,10 @@ class Engine:
             self.videos.reconcile()
         except Exception as error:
             self.store.log("error", "Vídeos: " + safe_error(error))
+        try:
+            self.snapshot_sales(now)
+        except Exception as error:
+            self.store.log("error", "Registro diário de vendas: " + safe_error(error))
         settings = self.store.settings()
         if not settings["schedule_enabled"] or now.strftime("%H:%M") < settings["schedule_time"]:
             return

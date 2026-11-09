@@ -60,6 +60,9 @@ def create_app(data_dir=None, testing=False):
                 if request.mimetype != "application/octet-stream":
                     return jsonify(error="Envie o vídeo como application/octet-stream."), 415
                 return None
+            if request.path.endswith("/frames"):
+                # Fidelity frames (Modern mode): three small JPEGs in base64, still JSON.
+                request.max_content_length = 1024 * 1024
             if request.method != "GET" and not request.is_json:
                 return jsonify(error="Requisição JSON obrigatória."), 415
             return None
@@ -305,6 +308,14 @@ def create_app(data_dir=None, testing=False):
         worker_id = worker_identity({"worker_id": request.headers.get("X-Worker-Id")})
         store.worker_touch(worker_id)
         engine.videos.upload(task_id, worker_id, request.get_data(cache=False))
+        return jsonify(ok=True)
+
+    @app.post("/api/worker/tasks/<int:task_id>/frames")
+    def worker_frames(task_id):
+        body = request.get_json()
+        worker_id = worker_identity(body)
+        store.worker_touch(worker_id)
+        engine.videos.frames(task_id, worker_id, body.get("frames"))
         return jsonify(ok=True)
 
     @app.post("/api/videos")
