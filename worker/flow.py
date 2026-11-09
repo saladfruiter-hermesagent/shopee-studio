@@ -19,10 +19,6 @@ FAILED = re.compile(r"n[aã]o (foi|consegui) (poss[ií]vel )?gerar|falh(a|ou) na
 FAILED_CARD = re.compile(r"^\s*warning|falha|algo deu errado|tente de novo", re.I)
 CHALLENGE = re.compile(r"n[aã]o sou um rob[oô]|unusual traffic|tr[aá]fego incomum|captcha|verify it'?s you|confirme que [eé] voc[eê]", re.I)
 COST_PANEL = re.compile(r"usar\s+(\d+)\s*cr[eé]ditos", re.I)
-AUTOSTART = re.compile(r"foi agendad|agendado|na fila de processamento|aguardando na fila|iniciada|iniciei a gera|"
-                       r"está sendo gerad|sendo processad", re.I)
-QUESTION = re.compile(r"voc[êe] gostaria|preciso que voc[êe]|me (forne|diga|informe|conte)|qual (v[íi]deo|imagem)|quais\b",
-                      re.I)
 
 
 class FlowError(Exception):
@@ -178,132 +174,69 @@ class Flow:
         if button.get_attribute("aria-checked") != "true":
             raise FlowError("ui_changed", f"O Flow não marcou a opção '{label}'.")
 
-    def agent_mode(self):
-        """Liga o modo Agente da caixa de comando: sem ele não existe cartão de confirmação de custo."""
-        for _ in range(3):
+    def agent_off(self):
+        """Garante o modo Agente DESLIGADO: só assim o compositor mostra a chave Imagem/Vídeo.
+
+        Com o Agente ligado o Flow não oferece a escolha de gerar vídeo e o resultado sai errado,
+        então o worker confere o estado do botão em toda tarefa e desliga se estiver ligado.
+        """
+        for _ in range(4):
             state = self.page.evaluate("""() => {
                 const chip = document.querySelector('flow-agent-mode-toggle-chip button');
                 const box = document.querySelector('flow-base-prompt-box');
-                return {pressed: chip ? chip.getAttribute('aria-pressed') : null,
-                        agent: !!box && [...box.querySelectorAll('button')]
-                            .some(b => b.getAttribute('aria-label') === 'Instruções para o agente')};
+                const botao = chip || (box ? [...box.querySelectorAll('button')]
+                    .find(b => (b.getAttribute('aria-label') || b.innerText.trim()) === 'Agente') : null);
+                if (!botao) return 'ausente';
+                return botao.getAttribute('aria-pressed') === 'true' ? 'ligado' : 'desligado';
             }""")
-            if state["agent"] or state["pressed"] == "true":
+            if state == "ausente":
+                raise FlowError("ui_changed", "Botão do modo Agente não encontrado no compositor do Flow.")
+            if state == "desligado":
                 return
-            if not self.page.evaluate("""() => { const c = document.querySelector('flow-agent-mode-toggle-chip button');
-                    if (!c) return false; c.click(); return true; }"""):
-                break
+            self.page.evaluate("""() => {
+                const chip = document.querySelector('flow-agent-mode-toggle-chip button');
+                const box = document.querySelector('flow-base-prompt-box');
+                const botao = chip || (box ? [...box.querySelectorAll('button')]
+                    .find(b => (b.getAttribute('aria-label') || b.innerText.trim()) === 'Agente') : null);
+                if (botao) botao.click();
+            }""")
             time.sleep(3)
-        raise FlowError("ui_changed", "Não foi possível ligar o modo Agente da caixa de comando do Flow.")
-
-    def agent_settings(self):
-        """Abre (ou reaproveita) o painel 'Configurações do agente neste projeto' e devolve o painel visível."""
-        def visible_view():
-            return self.page.evaluate_handle("""() => [...document.querySelectorAll('flow-settings-view')]
-                .find(v => v.offsetParent !== null) || null""").as_element()
-
-        if visible_view():
-            return visible_view()
-        handle = self.page.evaluate_handle("""() => {
-            const box = document.querySelector('flow-base-prompt-box');
-            return box ? [...box.querySelectorAll('button')]
-                .find(b => b.getAttribute('aria-label') === 'Configurações') || null : null; }""")
-        button = handle.as_element()
-        if not button:
-            raise FlowError("ui_changed", "Botão de configurações do agente não encontrado no compositor.")
-        button.click()
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            view = visible_view()
-            if view:
-                return view
-            time.sleep(0.5)
-        raise FlowError("ui_changed", "Painel de configurações do agente não abriu.")
-
-    def confirmation_mode(self, view):
-        """Lê 'Confirmar antes de gerar' sem alterar nada: 'asking' (Sempre) ou 'auto' (Nunca).
-
-        A escolha é do usuário no Flow; o worker só se adapta. Em 'auto' os créditos são gastos no
-        envio, então o painel precisa ser avisado antes do clique em enviar.
-        """
-        state = view.evaluate("""(view) => {
-            const radio = label => [...view.querySelectorAll('input.mdc-radio__native-control')]
-                .find(r => (r.closest('mat-radio-button')?.innerText || '').trim().startsWith(label));
-            const always = radio('Sempre'), never = radio('Nunca');
-            if (!always || !never) return null;
-            return {always: always.checked, never: never.checked};
-        }""")
-        if not state:
-            raise FlowError("ui_changed", "Opção 'Confirmar antes de gerar' não encontrada nas configurações do agente.")
-        if state["always"]:
-            return "asking"
-        if state["never"]:
-            return "auto"
-        raise FlowError("ui_changed", "O Flow não marcou nem 'Sempre' nem 'Nunca' em 'Confirmar antes de gerar'.")
+        raise FlowError("ui_changed", "Não consegui desligar o modo Agente do Flow; sem isso não há chave de vídeo.")
 
     def ensure_settings(self, model, expected_cost=None):
-        """Modo Agente, vídeo 9:16 x1, modelo esperado e compositor 720p/10 s. Devolve (modo, custo).
+        """Agente desligado + compositor em Vídeo, 9:16, 720p, 10 s, x1 e modelo esperado.
 
-        Não mexe na confirmação de custo: se estiver em 'Nunca', a geração começa no envio.
+        Devolve o custo que o Flow mostra para a geração. Com o Agente desligado não existe cartão
+        de confirmação: os créditos saem no envio, então quem chama avisa o painel antes.
         """
-        self.agent_mode()
-        view = self.agent_settings()
-        mode = self.confirmation_mode(view)
-        state = view.evaluate("""(view) => {
-            const head = [...view.querySelectorAll('*')]
-                .find(e => e.childElementCount === 0 && e.textContent.trim() === 'Padrão para geração de vídeo');
-            const section = head && head.closest('.settings-section');
-            if (!section) return {error: 'seção de vídeo não encontrada'};
-            for (const label of ['9:16', 'x1']) {
-                const toggle = [...section.querySelectorAll('button[role=radio]')]
-                    .find(b => b.innerText.trim().endsWith(label));
-                if (toggle && toggle.getAttribute('aria-checked') !== 'true') toggle.click();
-            }
-            return {model: (section.querySelector('button[aria-label="Modelo padrão de geração de vídeo"]')?.innerText || '')
-                .replace('arrow_drop_down', '').trim()};
-        }""")
-        if state.get("error"):
-            raise FlowError("ui_changed", "Configurações do agente: " + state["error"])
-        if model.casefold() not in state["model"].casefold():
-            raise FlowError("model_mismatch", f"Modelo padrão de vídeo no Flow é '{state['model']}', esperado '{model}'.")
-        # O painel só fecha por 'Salvar' (não há Fechar e Escape não fecha); salvar sem mudanças é inofensivo.
-        save = view.evaluate_handle("""(view) => [...view.querySelectorAll('button')]
-            .find(b => b.innerText.trim() === 'Salvar') || null""").as_element()
-        if not save:
-            raise FlowError("ui_changed", "Botão 'Salvar' não encontrado nas configurações do agente.")
-        try:
-            save.click(timeout=8000)
-        except Exception:  # Painel estreito às vezes reporta o botão como fora de vista.
-            view.evaluate("""(view) => [...view.querySelectorAll('button')]
-                .find(b => b.innerText.trim() === 'Salvar')?.click()""")
-        time.sleep(2)
-        for _ in range(20):
-            if not self.page.evaluate("() => [...document.querySelectorAll('flow-settings-view')].some(v => v.offsetParent !== null)"):
-                break
-            time.sleep(0.5)
-        else:
-            raise FlowError("ui_changed", "Painel de configurações do agente não fechou depois de Salvar; "
-                                          "a caixa de comando fica oculta e nada seria enviado.")
-
+        self.agent_off()  # Sem isso o compositor não oferece a chave Imagem/Vídeo.
         self.open_settings()
         pane = self.settings_pane()
-        for label in ("9:16", "720p", "10s"):
+        if not pane.evaluate("""(pane) => [...pane.querySelectorAll('button[role=radio]')]
+                .some(b => b.innerText.trim().endsWith('Vídeo'))"""):
+            raise FlowError("ui_changed", "O painel do compositor não oferece a opção Vídeo "
+                                          "(modo Agente ainda ativo?).")
+        for label in ("Vídeo", "9:16", "720p", "10s", "x1"):
             self.pick(pane, label)
         state = pane.evaluate("""(pane) => ({
-            model: (pane.querySelector('button[aria-label="Selecionar família de modelos"]')?.innerText || '')
+            modelo: (pane.querySelector('button[aria-label="Selecionar família de modelos"]')?.innerText || '')
                 .replace('arrow_drop_down', '').trim(),
+            video: (() => { const b = [...pane.querySelectorAll('button[role=radio]')]
+                .find(b => b.innerText.trim().endsWith('Vídeo')); return b ? b.getAttribute('aria-checked') : null; })(),
             text: pane.innerText})""")
-        if model.casefold() not in state["model"].casefold():
-            raise FlowError("model_mismatch", f"Modelo de vídeo no compositor é '{state['model']}', esperado '{model}'.")
+        if state.get("video") != "true":
+            raise FlowError("ui_changed", "O Flow não marcou a opção Vídeo no painel do compositor.")
+        if model.casefold() not in state["modelo"].casefold():
+            raise FlowError("model_mismatch", f"Modelo de vídeo no compositor é '{state['modelo']}', esperado '{model}'.")
         cost = COST_PANEL.search(state["text"])
         if not cost:
             raise FlowError("ui_changed", "O Flow não mostrou o custo da geração no compositor.")
         if expected_cost is not None and int(cost.group(1)) != int(expected_cost):
             raise FlowError("cost_mismatch", f"O compositor do Flow estima {cost.group(1)} créditos; o esperado era "
                                              f"{expected_cost}. Nada foi gerado.")
-        self.page.keyboard.press("Escape")  # The panel saves as it goes; closing frees the prompt box.
+        self.page.keyboard.press("Escape")  # O painel salva conforme muda; fechar libera a caixa de comando.
         time.sleep(1)
-        return mode, int(cost.group(1))
+        return int(cost.group(1))
 
     def new_session(self):
         """Abre uma sessão nova para o agente não herdar cartões/vídeos da tarefa anterior."""
@@ -388,51 +321,32 @@ class Flow:
                 "cards": self.page.evaluate("() => document.querySelectorAll('flow-permission-message').length"),
                 "thumbs": self.tile_thumbs()}
 
-    def wait_permission(self, expected_cost=None, before=None, timeout=240, grace=25):
-        """Devolve (custo, texto) do cartão de permissão, ou (None, texto) quando não há cartão.
+    def card_if_any(self, expected_cost, before=None, timeout=20):
+        """Cartão de confirmação, se aparecer. Com o Agente desligado não existe: a geração começa direto.
 
-        Sem cartão só é aceito depois de `grace` segundos e quando o agente confirma que começou a
-        gerar ('agendado', 'na fila'...): é o modo 'Nunca confirmar', em que os créditos saem no envio.
-        Cartões de mídia do próprio agente (a galeria de vídeos da resposta) não são perguntas.
+        Fica como rede de segurança caso o modo Agente ligue sozinho — sem isso o worker geraria
+        com os parâmetros errados sem perceber.
         """
         before = before or {}
-        start = time.time()
-        deadline = start + timeout
+        deadline = time.time() + timeout
         while time.time() < deadline:
             self.check_session()
-            card = self.page.evaluate("""(before) => {
+            text = self.page.evaluate("""(before) => {
                 const cards = [...document.querySelectorAll('flow-permission-message')].slice(before.cards || 0);
                 const open = cards.filter(c => c.querySelector('[role=radio][aria-label="Aprovar"][aria-disabled="false"]')
                     && !c.querySelector('[role=radio][aria-checked="true"]'));
-                const last = open.pop();
-                const bubbles = [...document.querySelectorAll('flow-chat-bubble')].slice(before.bubbles || 0);
-                const question = bubbles
-                    .map(b => [...b.querySelectorAll('flow-a2ui-multiple-choice, flow-a2ui-video-option')]
-                        .find(e => !e.querySelector('img.video-thumbnail, video[src]')))
-                    .find(e => e && (e.innerText || '').trim().length > 3);
-                const texto = bubbles.map(b => (b.innerText || '').trim()).pop() || '';
-                return {text: last ? last.innerText : '', question: question ? question.innerText.slice(0, 300) : '',
-                        agente: texto.slice(0, 300)};
+                return open.length ? open.pop().innerText : '';
             }""", before)
-            if card["text"]:
-                match = COST.search(card["text"])
+            if text:
+                match = COST.search(text)
                 if not match:
-                    raise FlowError("ui_changed", "Cartão de confirmação sem custo legível: " + card["text"][:150])
-                return int(match.group(1)), card["text"].strip()
+                    raise FlowError("ui_changed", "Cartão de confirmação sem custo legível: " + text[:150])
+                return int(match.group(1)), text.strip()
             agent = self.agent_text()
             if NO_CREDITS.search(agent):
                 raise FlowError("no_credits", "Flow sem créditos suficientes: " + agent[-200:])
-            if card["question"]:
-                raise FlowError("agent_question", "O agente do Flow fez uma pergunta em vez de pedir confirmação: "
-                                                  + card["question"])
-            started = bool(AUTOSTART.search(agent))
-            if not started and time.time() - start >= grace and QUESTION.search(card.get("agente", "")):
-                raise FlowError("agent_question", "O agente do Flow perguntou em vez de gerar: "
-                                                  + card["agente"][:250])
-            if started and time.time() - start >= grace:
-                return None, agent.strip()[-250:]
             time.sleep(2)
-        raise FlowError("ui_changed", "O agente do Flow não pediu confirmação no prazo.")
+        return None, ""
 
     def agent_text(self):
         return self.page.evaluate("[...document.querySelectorAll('flow-chat-bubble')].slice(-3).map(b => b.innerText).join('\\n')")
@@ -509,49 +423,26 @@ class Flow:
                  workdir, dry_run=False):
         self.open_project(project_url)
         on_stage("preparing")
-        mode, cost = self.ensure_settings(model, expected_cost)
+        cost = self.ensure_settings(model, expected_cost)  # Agente desligado + chave Vídeo
         self.new_session()
         self.attach_image(image)
         before = self.counts()
         command = (f"Gere agora exatamente 1 vídeo com o modelo {model}, proporção 9:16, 10 segundos, usando a "
                    f"imagem anexada como referência do produto. Não faça perguntas. {prompt}")
-        if mode == "auto":
-            # "Confirmar antes de gerar: Nunca" — os créditos saem no envio, antes de qualquer cartão.
-            self.log("Flow: confirmação desligada na conta; custo do compositor é a aprovação.")
-            if dry_run:
-                self.log(f"Flow: dry_run com confirmação desligada; nada enviado ({cost} créditos seriam gastos).")
-                return None
-            before_approve(cost)  # O painel registra que os créditos podem ser gastos antes do envio.
-            self.submit(command)
-            on_stage("submitted", credits=cost)
-            self.wait_render(before)
-            on_stage("downloading")
-            return self.download(Path(workdir) / "flow.mp4")
-
-        self.submit(command)
-        approved, text = self.wait_permission(expected_cost, before)
-        if approved is None:  # A conta mudou para "Nunca" no meio do caminho: a geração já começou.
-            self.log("Flow: agente começou a gerar sem cartão; registrando " f"{cost} créditos.")
-            before_approve(cost)
-            on_stage("submitted", credits=cost)
-            self.wait_render(before)
-            on_stage("downloading")
-            return self.download(Path(workdir) / "flow.mp4")
-        self.log(f"Flow pediu confirmação: {text[:160]}")
-        if approved != expected_cost or not re.search(r"\b1 gera[cç][aã]o\b", text):
-            self.answer(False)
-            raise FlowError("cost_mismatch", f"Flow pediu {approved} créditos ('{text[:120]}'); o esperado era "
-                                             f"{expected_cost} para 1 geração. Geração recusada.")
         if dry_run:
-            self.answer(False)
+            self.log(f"Flow: dry_run; nada enviado ({cost} créditos seriam gastos).")
             return None
-        try:
-            before_approve(approved)  # The panel records "credits may be spent" before the click.
-        except Exception:
-            self.answer(False)
-            raise
-        self.answer(True)
-        on_stage("submitted", credits=approved)
+        before_approve(cost)  # Com o Agente desligado os créditos saem no envio: avisa o painel antes.
+        self.submit(command)
+        on_stage("submitted", credits=cost)
+        approved, text = self.card_if_any(expected_cost, before)  # Só existe se o Agente estiver ligado.
+        if approved is not None:
+            self.log(f"Flow pediu confirmação: {text[:160]}")
+            if approved != expected_cost or not re.search(r"\b1 gera[cç][aã]o\b", text):
+                self.answer(False)
+                raise FlowError("cost_mismatch", f"Flow pediu {approved} créditos ('{text[:120]}'); o esperado era "
+                                                 f"{expected_cost} para 1 geração. Geração recusada.")
+            self.answer(True)
         self.wait_render(before)
         on_stage("downloading")
         return self.download(Path(workdir) / "flow.mp4")
