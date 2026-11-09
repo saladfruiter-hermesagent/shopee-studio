@@ -293,26 +293,47 @@ class Flow:
         return self.page.evaluate("document.querySelectorAll('flow-video-tile').length")
 
     def submit(self, prompt):
+        """Envia o comando e confirma pelo estado do compositor.
+
+        O Flow novo mantém o clique em "Iniciar geração" e não aceita Enter de forma confiável; a
+        confirmação é: caixa de texto vazia, botão de gerar desativado, ou uma geração nova
+        aparecendo ("Gerando" / tile novo). Nunca reenvia sem antes não haver sinal algum.
+        """
         box = self.page.locator(PROMPT_BOX_VISIBLE).first
         box.click()
         self.page.keyboard.insert_text(prompt)
         time.sleep(2)
-        pending = lambda: self.page.evaluate("""() => {
-            const box = [...document.querySelectorAll('div[role=textbox][contenteditable=true]')]
-                .find(b => b.offsetParent !== null);
-            return ((box && box.innerText) || '').trim().length; }""")
-        for attempt in range(3):
-            if attempt == 0:
-                self.click_label("Iniciar geração")
-            else:  # The send button can stay inert right after an upload; Enter submits the box.
+
+        def estado():
+            return self.page.evaluate("""() => {
+                const caixa = document.querySelector('flow-base-prompt-box');
+                const texto = [...document.querySelectorAll('div[role=textbox][contenteditable=true]')]
+                    .filter(b => b.offsetParent !== null).map(b => (b.innerText || '').trim()).join('');
+                const botao = caixa ? [...caixa.querySelectorAll('button')]
+                    .find(b => (b.getAttribute('aria-label') || '') === 'Iniciar geração') : null;
+                return {vazio: texto.length === 0,
+                        desativado: !!botao && (botao.disabled || botao.getAttribute('aria-disabled') === 'true'),
+                        tiles: document.querySelectorAll('flow-video-tile').length,
+                        gerando: (document.body.innerText.match(/\\bGerando\\b/g) || []).length};
+            }""")
+
+        antes = estado()
+        if antes["vazio"]:
+            raise FlowError("ui_changed", "Não consegui escrever o comando na caixa de comando do Flow.")
+        self.click_label("Iniciar geração")
+        for tentativa in range(2):
+            for _ in range(15):
+                time.sleep(1)
+                agora = estado()
+                if (agora["vazio"] or agora["desativado"] or agora["tiles"] > antes["tiles"]
+                        or agora["gerando"] > antes["gerando"]):
+                    return
+            if tentativa == 0:  # Nenhum sinal de envio: o clique não pegou, Enter costuma resolver.
                 self.page.locator(PROMPT_BOX_VISIBLE).first.click()
                 self.page.keyboard.press("End")
                 self.page.keyboard.press("Enter")
-            for _ in range(10):
-                time.sleep(1)
-                if not pending():
-                    return
-        raise FlowError("ui_changed", "O Flow não aceitou o envio do comando.")
+                time.sleep(2)
+        raise FlowError("ui_changed", "O Flow não confirmou o envio do comando (nenhum sinal de geração).")
 
     def counts(self):
         """Estado usado para reconhecer o resultado novo: miniaturas da galeria e bolhas do chat."""
