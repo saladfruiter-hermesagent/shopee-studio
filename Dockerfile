@@ -6,7 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd -g 10001 studio && useradd -u 10001 -g studio -m studio \
     && mkdir /data && chown studio:studio /data
-COPY --chown=studio:studio app.py core.py content.py analysis.py llm.py video.py ./
+COPY --chown=studio:studio app.py core.py content.py analysis.py llm.py video.py modern.py ./
 COPY --chown=studio:studio static/ static/
 COPY --chown=studio:studio templates/ templates/
 USER studio

@@ -28,6 +28,8 @@ Dois laços independentes rodam no mesmo serviço: `hermes` (tarefas de modelo) 
 - **Detecção do resultado:** o cartão do chat do agente **não** serve como sinal — vídeo concluído e vídeo na fila têm o mesmo DOM (`img.video-thumbnail` é a imagem de origem). O worker considera pronto quando aparece uma **miniatura nova em `flow-video-tile`** na galeria (recarrega o projeto a cada 90 s para conferir), baixa o tile novo em 720p e trata "Falha / Algo deu errado" na resposta do agente como falha. A fila do Flow pode passar de 15 min ("alta demanda") — o prazo é 30 min.
 
 
+- **Modo Moderno (worker 1.2.0):** quando a tarefa traz `finish`, o worker extrai 3 quadros do clipe cru (20%, 50% e 80%, 360 px, JPEG) e os envia a `/api/worker/tasks/<id>/frames` para a conferência de fidelidade; depois renderiza num único ffmpeg em 1080×1920, 30 fps (fundo desfocado se a proporção não for 9:16), com legenda, selo de compra nos últimos 3,5 s e áudio `loudnorm`/AAC. Falha ao mandar os quadros só fica no log — o vídeo segue. Tarefas sem `finish` (Modo Legacy) saem como antes.
+
 ### Login, 2FA ou CAPTCHA
 
 Quando o Google pede login ou verificação, a fila pausa e chega um alerta no Telegram. Na VM:

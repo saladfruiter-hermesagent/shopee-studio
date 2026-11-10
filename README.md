@@ -29,6 +29,38 @@ Painel pessoal para pesquisar, selecionar e acompanhar ofertas de afiliados Shop
 - **Enviar sem vídeo:** cada card da seleção que ainda não foi entregue tem o botão **"Enviar sem vídeo"**. Ele mostra a mensagem exata que vai ao Telegram (nome curto, descrição e links numerados) e, ao confirmar, envia na hora: **foto do anúncio + legenda**, ou só texto se a foto não baixar. Serve quando o vídeo não sai (fila do Flow, teto de créditos, falha) e é uma alternativa ao envio com vídeo: o produto fica "entregue" e um vídeo ainda na fila para ele é cancelado. O envio não se repete para o mesmo produto.
 - Login no painel, proteção CSRF e limitação de tentativas de login. Segredos ficam fora do Git e da imagem.
 
+## Modos: Legacy e Moderno
+
+Preferências → **Modo** escolhe como os produtos e os vídeos são escolhidos. Vale para as próximas consultas; cada produto guarda o modo com que foi escolhido (`mode`), e o vídeo dele segue esse modo.
+
+- **Modo Legacy** (padrão): exatamente o comportamento anterior — tudo o que está descrito acima.
+- **Modo Moderno**: "vende bem, mas pouca gente divulga". Plano e decisões em [`PLANO_MODO_MODERNO.md`](PLANO_MODO_MODERNO.md).
+
+### Seleção do Modo Moderno
+
+- Coleta por **vendas** (`sortType: 2`) em cada categoria configurada (`productCatId`, até 20 IDs) ou na lista geral, até `modern_pages` páginas de 50, com 1 s entre páginas. A posição de cada anúncio é recalculada pelas vendas lidas, porque a lista geral não vem ordenada por vendas. A busca por categoria às vezes responde `error [10000]: System Error`; essa resposta é repetida até 5 vezes com espera crescente, e uma página que continua falhando só encurta aquela categoria (aviso na consulta).
+- Funil, nesta ordem (a contagem de cada corte aparece no aviso da consulta): dados incompletos ou oferta fora da validade, repetidos (mesma chave ou mesmo nome normalizado), já enviados/descartados, nota < 4,5, vendas < 50, preço fora de R$ 80–1.500, desconto abaixo do mínimo (opcional, para Black Friday), fora do filtro de nome, **top de afiliados** (`listType: 2`, 20 páginas, lista guardada por um dia), **vitrine** (30 primeiras posições), **estourados** (> 5.000 vendas) e **tipo de produto** já entregue ou reservado nos últimos 7 dias (2 primeiras palavras relevantes do nome, em qualquer ordem).
+- Pontuação = demanda × (nota/5)³ × √comissão × vendedor × vitrine × frescor × tendência × preço:
+  demanda = vendas, limitada a 1.500 (acima disso, 1.500 × 1.500 / vendas); vendedor ×0,7 com comissão extra do vendedor ≥ 5%; vitrine ×0,6 até a posição 100; frescor ×1,4 até 14 dias de oferta e ×1,15 até 30; tendência = 1 + crescimento semanal das vendas, entre ×0,5 e ×2,5 (neutro sem histórico); preço ×1 até R$ 400 e (400/preço)^0,8 acima. A comissão usa a mesma base conservadora do Legacy. Campo ausente na API vira fator neutro, com "dado indisponível" no card.
+- Concorrência "baixa" quando vendas ≤ 1.500, posição > 100 e comissão extra do vendedor < 5%; senão "média".
+- Seleção: melhor pontuação primeiro, respeitando o máximo por loja, nunca dois do mesmo tipo e, com mais de uma categoria, uma cota por categoria antes de completar.
+- Opcional: **potencial de vídeo** — uma chamada ao modelo dá nota 0–10 aos melhores (`min(12, max(6, 3 × quantidade))`: 9 com a quantidade padrão de 3); pontuação final = pontuação/maior × potencial/10, e quem tem potencial ≥ 7 vem antes. **Não elimina ninguém**: só reordena antes da seleção, que continua limitada pela quantidade, pelo máximo por loja, pelo tipo e pela cota por categoria. Falha do modelo mantém a seleção pela pontuação.
+- **Registro diário de vendas** (Preferências → Rotina, padrão ligado às 07:00): lê as mesmas fontes do Moderno e guarda as vendas de cada anúncio por 60 dias, base da tendência (referência mais próxima de 7 dias atrás, com pelo menos 2 dias). Roda nos dois modos, só lê a API, até 3 tentativas por dia com 30 min de intervalo; sem credenciais da Shopee, não roda. As consultas do Moderno também gravam as vendas lidas.
+
+### Roteiro do Modo Moderno
+
+Além das regras de legenda e roteiro de sempre, o código recusa (e devolve ao modelo para correção): narração fora de 18–25 palavras, última frase sem "produto marcado", abertura com "Olha"/"Gente" ou igual à de um dos últimos 8 vídeos, **número falado que não está no nome do anúncio** (dígitos e números por extenso) e rosto/sorriso nas cenas (só mãos). Cada vídeo recebe um de 7 formatos (`uso_real`, `problema_solucao`, `antes_depois`, `unboxing`, `pov_rotina`, `teste_desafio`, `detalhes_macro`), nunca um dos 3 últimos usados; o prompt do Flow leva o formato e a regra de só mãos.
+
+### Vídeo do Modo Moderno
+
+- O worker (1.2.0+) recebe `finish` na tarefa: renderiza em **1080×1920, 30 fps** (fundo desfocado quando a proporção não é 9:16), com áudio normalizado e, nos últimos 3,5 s, o **selo de compra** "★ nota • N vendidos" e o botão laranja pulsante "CONFIRA NO PRODUTO MARCADO", acima da legenda falada. Worker antigo ignora `finish` e entrega como no Legacy.
+- **Fidelidade:** o worker manda 3 quadros do clipe cru (`/api/worker/tasks/<id>/frames`); antes de entregar, o modelo de visão compara os quadros com a foto do anúncio e dá nota 0–10, que aparece no card. Nota abaixo do mínimo (padrão 6) gera um alerta no Telegram, mas **não bloqueia** a entrega; falha na conferência vira "não avaliada".
+- Créditos, aprovação de custo, teto diário, estados de entrega e regras de não repetição são os mesmos do Legacy.
+
+### Conferir a API
+
+`SHOPEE_APP_ID=… SHOPEE_SECRET=… python scripts/probe_modern_api.py [--category 100715]` faz 3 consultas de uma página e mostra quais campos voltam, sem imprimir segredos nem links. Conferido em 09/11/2026: `sellerCommissionRate`, `priceDiscountRate` (em %), `productCatIds`, `periodStartTime` e `listType: 2` respondem; `sortType: 2` ordena por vendas dentro de uma categoria, mas não na lista geral. `periodStartTime` é o início do período da oferta e quase sempre igual entre anúncios, então o frescor raramente pesa; a paginação repete anúncios entre páginas (o funil descarta).
+
 ## Worker da VM
 
 O Antigravity CLI e o navegador logado no Google Flow só existem na VM hermes, então o painel não os chama direto. Um worker na VM busca as tarefas pelo endpoint /api/worker/*, autenticado por um token gerado em Preferências → Worker da VM, e devolve o resultado. Instalação e operação: worker/README.md. Sem o worker, os modelos agy são pulados na hora e a cadeia segue para os fallbacks; os vídeos esperam na fila por até 6 horas.

@@ -2,6 +2,9 @@
 
 ## Estado e objetivo
 
+> **Modo Moderno** (seleção anticoncorrência, roteiro variado, selo e fidelidade do vídeo): plano, decisões e
+> andamento em [`PLANO_MODO_MODERNO.md`](PLANO_MODO_MODERNO.md).
+
 Este documento contém apenas o trabalho pendente e o andamento das melhorias em curso. O plano antigo, as etapas executadas e os registros de implantação foram retirados a pedido do usuário. O comportamento implementado está descrito no `README.md`.
 
 **Escopo confirmado:** melhorar a busca de anúncios equivalentes e simplificar a entrega no Telegram para uma única mensagem por produto, com vídeo, descrição e links. O usuário pediu as três entregas num PR só e confirmou os limites propostos do piloto.
