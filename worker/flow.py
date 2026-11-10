@@ -20,6 +20,43 @@ FAILED_CARD = re.compile(r"^\s*warning|falha|algo deu errado|tente de novo", re.
 CHALLENGE = re.compile(r"n[aã]o sou um rob[oô]|unusual traffic|tr[aá]fego incomum|captcha|verify it'?s you|confirme que [eé] voc[eê]", re.I)
 COST_PANEL = re.compile(r"usar\s+(\d+)\s*cr[eé]ditos", re.I)
 
+# Galeria do projeto em ordem do DOM (mais recente primeiro). Cada `flow-tile-container` é uma mídia:
+# imagem enviada (`flow-image-tile`, com o nome do arquivo), vídeo pronto (`flow-video-tile` com
+# `img.thumbnail`), geração em andamento (`flow-pending-tile`, com o texto do comando) ou geração que
+# falhou (`flow-error-tile`, "Falha / Não foi possível gerar o vídeo."). O tile de falha some ao recarregar.
+GALLERY = """() => [...document.querySelectorAll('flow-tile-container')].map(t => {
+    const text = (t.innerText || '').replace(/\\s+/g, ' ').trim();
+    const error = t.querySelector('flow-error-tile');
+    if (error) return {kind: 'error', text: ((error.querySelector('.error-subtitle') || error).innerText || '')
+        .replace(/\\s+/g, ' ').trim() || text};
+    if (t.querySelector('flow-pending-tile')) return {kind: 'pending', text};
+    if (t.querySelector('flow-video-tile')) return {kind: 'video', text,
+        thumb: (t.querySelector('flow-video-tile img.thumbnail') || t.querySelector('flow-video-tile img') || {}).src || ''};
+    return {kind: t.querySelector('flow-image-tile') ? 'image' : 'other', text};
+})"""
+
+
+def scan_gallery(tiles, image_name, seen):
+    """Separa o que está ACIMA da imagem enviada nesta tarefa — só ali pode estar o vídeo dela.
+
+    A galeria é virtualizada: entre leituras e recarregamentos, vídeos antigos entram e saem do DOM.
+    Comparar a lista inteira com a de antes do envio faz um vídeo antigo parecer "novo" (foi assim que
+    vídeos de outros produtos foram entregues). A geração é sempre mais nova que o upload da imagem de
+    referência, então a âncora é o tile `produto<id>.jpg`. Sem a âncora, o limite é o primeiro vídeo
+    já conhecido; sem nenhum dos dois, não há como provar nada e a região fica vazia.
+    """
+    anchor = next((i for i, t in enumerate(tiles) if t.get("kind") == "image" and image_name
+                   and image_name in (t.get("text") or "").split()), None)
+    anchored = anchor is not None
+    if anchor is None:
+        anchor = next((i for i, t in enumerate(tiles) if t.get("kind") == "video" and t.get("thumb") in seen), 0)
+    region = tiles[:anchor]
+    return {"anchored": anchored,
+            "fresh": [t["thumb"] for t in region if t.get("kind") == "video" and t.get("thumb")
+                      and t["thumb"] not in seen],
+            "pending": [t.get("text", "") for t in region if t.get("kind") == "pending"],
+            "errors": [t.get("text", "") for t in region if t.get("kind") == "error"]}
+
 
 class FlowError(Exception):
     """`code` tells the panel what to do; `charged` means credits may already be spent."""
@@ -52,7 +89,7 @@ class Flow:
         self.profile, self.display, self.log = str(profile), display, log
         self.playwright = self.context = self.page = None
         self.project_url = ""
-        self.new_thumbs = []
+        self.new_thumbs, self.seen_thumbs = [], set()
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright  # Only the VM worker venv has Playwright.
@@ -293,26 +330,47 @@ class Flow:
         return self.page.evaluate("document.querySelectorAll('flow-video-tile').length")
 
     def submit(self, prompt):
+        """Envia o comando e confirma pelo estado do compositor.
+
+        O Flow novo mantém o clique em "Iniciar geração" e não aceita Enter de forma confiável; a
+        confirmação é: caixa de texto vazia, botão de gerar desativado, ou um tile de geração novo
+        (`flow-pending-tile` / `flow-error-tile`, que o Flow põe no topo da galeria logo após o
+        clique). Nunca reenvia sem antes não haver sinal algum. Não conte o texto "Gerando": é o
+        título de vídeos antigos e varia conforme a galeria virtualizada renderiza.
+        """
         box = self.page.locator(PROMPT_BOX_VISIBLE).first
         box.click()
         self.page.keyboard.insert_text(prompt)
         time.sleep(2)
-        pending = lambda: self.page.evaluate("""() => {
-            const box = [...document.querySelectorAll('div[role=textbox][contenteditable=true]')]
-                .find(b => b.offsetParent !== null);
-            return ((box && box.innerText) || '').trim().length; }""")
-        for attempt in range(3):
-            if attempt == 0:
-                self.click_label("Iniciar geração")
-            else:  # The send button can stay inert right after an upload; Enter submits the box.
+
+        def estado():
+            return self.page.evaluate("""() => {
+                const caixa = document.querySelector('flow-base-prompt-box');
+                const texto = [...document.querySelectorAll('div[role=textbox][contenteditable=true]')]
+                    .filter(b => b.offsetParent !== null).map(b => (b.innerText || '').trim()).join('');
+                const botao = caixa ? [...caixa.querySelectorAll('button')]
+                    .find(b => (b.getAttribute('aria-label') || '') === 'Iniciar geração') : null;
+                return {vazio: texto.length === 0,
+                        desativado: !!botao && (botao.disabled || botao.getAttribute('aria-disabled') === 'true'),
+                        pendentes: document.querySelectorAll('flow-pending-tile, flow-error-tile').length};
+            }""")
+
+        antes = estado()
+        if antes["vazio"]:
+            raise FlowError("ui_changed", "Não consegui escrever o comando na caixa de comando do Flow.")
+        self.click_label("Iniciar geração")
+        for tentativa in range(2):
+            for _ in range(15):
+                time.sleep(1)
+                agora = estado()
+                if agora["vazio"] or agora["desativado"] or agora["pendentes"] > antes["pendentes"]:
+                    return
+            if tentativa == 0:  # Nenhum sinal de envio: o clique não pegou, Enter costuma resolver.
                 self.page.locator(PROMPT_BOX_VISIBLE).first.click()
                 self.page.keyboard.press("End")
                 self.page.keyboard.press("Enter")
-            for _ in range(10):
-                time.sleep(1)
-                if not pending():
-                    return
-        raise FlowError("ui_changed", "O Flow não aceitou o envio do comando.")
+                time.sleep(2)
+        raise FlowError("ui_changed", "O Flow não confirmou o envio do comando (nenhum sinal de geração).")
 
     def counts(self):
         """Estado usado para reconhecer o resultado novo: miniaturas da galeria e bolhas do chat."""
@@ -369,43 +427,62 @@ class Flow:
         return self.page.evaluate("""() => [...document.querySelectorAll('flow-video-tile img')]
             .map(i => i.src || '').filter(Boolean)""")
 
-    def wait_render(self, before, timeout=1800):
-        """Espera o vídeo novo aparecer na galeria, recarregando o projeto de tempos em tempos.
+    def gallery(self, image_name):
+        return scan_gallery(self.page.evaluate(GALLERY), image_name, self.seen_thumbs)
+
+    def wait_render(self, before, image_name="", timeout=1800):
+        """Espera o vídeo DESTA tarefa aparecer na galeria, recarregando o projeto de tempos em tempos.
 
         O cartão do chat NÃO serve como sinal: vídeo concluído e vídeo 'na fila' têm o mesmo DOM
-        (`img.video-thumbnail` é a imagem de origem, não o vídeo). O único sinal confiável de
-        conclusão é uma miniatura nova em `flow-video-tile`; falha aparece como 'Falha / Algo deu
-        errado' na resposta do agente. A fila do Flow pode levar mais de 15 min ('alta demanda').
+        (`img.video-thumbnail` é a imagem de origem, não o vídeo). Só vale um vídeo pronto ACIMA da
+        imagem enviada nesta tarefa (`scan_gallery`): comparar a galeria inteira com a de antes
+        confunde vídeo antigo que a lista virtualizada voltou a renderizar com vídeo novo. Falha aparece
+        como `flow-error-tile` no lugar da geração — e some no próximo recarregamento, então ela é
+        conferida antes de recarregar, e não se recarrega enquanto a geração está visível em andamento.
+        A fila do Flow pode levar mais de 15 min ('alta demanda').
         """
-        seen = set((before or {}).get("thumbs") or [])
+        self.seen_thumbs = set((before or {}).get("thumbs") or [])
         deadline = time.time() + timeout
-        next_reload = time.time() + 90
+        last_reload = next_log = time.time()
         while time.time() < deadline:
             self.check_session()
             last = self.page.evaluate("""() => ([...document.querySelectorAll('flow-chat-bubble')].pop()?.innerText || '')""")
             if FAILED_CARD.search(last):
                 raise FlowError("render_failed", "Flow informou falha na geração: " + last.strip()[-250:], charged=True)
-            thumbs = self.tile_thumbs()
-            fresh = [src for src in thumbs if src not in seen]
-            if fresh:
-                self.new_thumbs = fresh
+            state = self.gallery(image_name)
+            if state["errors"]:
+                raise FlowError("render_failed", "O Flow mostrou falha na geração: " + state["errors"][0][:250],
+                                charged=True)
+            if state["fresh"]:
+                self.new_thumbs = state["fresh"][:1]  # O mais recente acima da imagem: o desta tarefa.
                 return
-            if time.time() >= next_reload:
-                self.log("Flow: vídeo ainda não apareceu na galeria; recarregando o projeto para conferir.")
+            now = time.time()
+            if now >= next_log + 90:
+                next_log = now
+                if state["pending"]:
+                    self.log("Flow: geração desta tarefa em andamento na galeria; aguardando.")
+                elif state["anchored"]:
+                    self.log("Flow: geração desta tarefa não aparece na galeria; recarregando para conferir.")
+                else:
+                    self.log(f"Flow: imagem {image_name} não encontrada na galeria; recarregando para conferir.")
+            # Em andamento: recarrega só a cada 5 min (recarregar apaga um tile de falha ainda não lido).
+            if now - last_reload >= (300 if state["pending"] else 90):
                 self.page.goto(self.project_url, wait_until="domcontentloaded", timeout=90000)
                 self.page.wait_for_selector(PROMPT_BOX_VISIBLE, timeout=60000)
-                time.sleep(3)
-                next_reload = time.time() + 90
+                time.sleep(5)
+                last_reload = time.time()
                 continue
             time.sleep(5)
         raise FlowError("render_timeout", "O vídeo não ficou pronto no prazo; confira o projeto no Flow.", charged=True)
 
     def download(self, destination):
-        """Baixa em 720p o tile novo (o das miniaturas detectadas) ou, na falta dele, o mais recente."""
-        index = self.page.evaluate("""(fresh) => {
-            const tiles = [...document.querySelectorAll('flow-video-tile')];
-            const i = tiles.findIndex(t => [...t.querySelectorAll('img')].some(im => fresh.includes(im.src || '')));
-            return i < 0 ? 0 : i; }""", list(getattr(self, "new_thumbs", []) or []))
+        """Baixa em 720p o tile detectado por `wait_render`. Sem ele, falha: nunca baixa 'o mais recente'."""
+        fresh = list(self.new_thumbs or [])
+        index = self.page.evaluate("""(fresh) => [...document.querySelectorAll('flow-video-tile')]
+            .findIndex(t => [...t.querySelectorAll('img')].some(im => fresh.includes(im.src || '')))""", fresh)
+        if not fresh or index < 0:
+            raise FlowError("download_failed", "O vídeo desta tarefa sumiu da galeria antes do download; "
+                                               "confira o projeto no Flow.", charged=True)
         self.page.evaluate("""(index) => { const tile = [...document.querySelectorAll('flow-video-tile')][index];
             const more = tile && [...tile.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Mais opções');
             if (more) more.click(); }""", index)
@@ -443,6 +520,6 @@ class Flow:
                 raise FlowError("cost_mismatch", f"Flow pediu {approved} créditos ('{text[:120]}'); o esperado era "
                                                  f"{expected_cost} para 1 geração. Geração recusada.")
             self.answer(True)
-        self.wait_render(before)
+        self.wait_render(before, Path(image).name)
         on_stage("downloading")
         return self.download(Path(workdir) / "flow.mp4")
