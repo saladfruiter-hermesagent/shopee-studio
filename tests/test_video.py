@@ -387,5 +387,41 @@ class FlowTextTest(unittest.TestCase):
         self.assertFalse(flow.FAILED.search("O processo de geração foi iniciado com sucesso"))
 
 
+class FlowGalleryTest(unittest.TestCase):
+    """Galeria virtualizada: só o que está acima da imagem desta tarefa pode ser o vídeo dela."""
+
+    def setUp(self):
+        import flow
+        self.scan = flow.scan_gallery
+        self.old = [dict(kind="video", text="play_circle Person adjusting gaming chair", thumb="t-cadeira"),
+                    dict(kind="video", text="play_circle Creating sneaker advertisement", thumb="t-tenis")]
+        self.images = [dict(kind="image", text="image produto174.jpg"), dict(kind="image", text="image produto173.jpg")]
+
+    def test_old_video_rendered_again_is_not_new(self):
+        # Antes do envio a lista virtualizada só tinha a cadeira; depois de recarregar, o tênis (antigo) aparece.
+        state = self.scan(self.images + self.old, "produto174.jpg", {"t-cadeira"})
+        self.assertEqual(state["fresh"], [])
+        self.assertTrue(state["anchored"])
+
+    def test_video_above_the_task_image_is_the_result(self):
+        tiles = [dict(kind="video", text="play_circle Piso vinílico", thumb="t-piso")] + self.images + self.old
+        self.assertEqual(self.scan(tiles, "produto174.jpg", set())["fresh"], ["t-piso"])
+
+    def test_error_and_pending_tiles_are_reported_only_above_the_image(self):
+        tiles = [dict(kind="error", text="Não foi possível gerar o vídeo."), dict(kind="pending", text="Gere agora")]
+        state = self.scan(tiles + self.images + [dict(kind="error", text="falha antiga")], "produto174.jpg", set())
+        self.assertEqual((state["errors"], state["pending"], state["fresh"]),
+                         (["Não foi possível gerar o vídeo."], ["Gere agora"], []))
+
+    def test_name_must_match_the_whole_file_name(self):
+        tiles = [dict(kind="video", text="", thumb="t-x"), dict(kind="image", text="image produto1745.jpg")] + self.old
+        state = self.scan(tiles, "produto174.jpg", {"t-cadeira"})
+        self.assertFalse(state["anchored"])
+        self.assertEqual(state["fresh"], ["t-x"])  # Sem âncora, o limite é o primeiro vídeo já conhecido.
+
+    def test_without_anchor_or_known_video_nothing_counts(self):
+        self.assertEqual(self.scan(self.old, "produto999.jpg", set())["fresh"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
