@@ -232,7 +232,8 @@ class EngineModernTest(unittest.TestCase):
         sleeper.start()
         self.addCleanup(sleeper.stop)
         self.store = Store(self.temp.name)
-        self.store.save_settings(dict(mode="modern", flow_project_url=PROJECT))
+        # top_count explícito: o padrão (3, D9) muda com o produto; estes testes foram escritos para 5.
+        self.store.save_settings(dict(mode="modern", flow_project_url=PROJECT, top_count=5))
         self.top_calls = 0
 
         def top(settings):
@@ -497,6 +498,18 @@ class BadgeTest(unittest.TestCase):
                                             transcriber=lambda *a: [], finish=dict(size=[540, 960], badge=dict(rating="4,9", sold="2 vendidos")))
             self.assertEqual((meta["width"], meta["height"], meta["badge"], meta["audio"]), (540, 960, True, True))
             self.assertEqual(len(subtitles.extract_frames(raw, folder)), 3)
+
+
+class DefaultsTest(unittest.TestCase):
+    """D9: a quantidade padrão de ofertas é 3 e o potencial de vídeo avalia 3 × ela (9 candidatos)."""
+
+    def test_default_top_count_is_three(self):
+        self.assertEqual(DEFAULTS["top_count"], 3)
+        self.assertEqual(validate_settings(dict(top_count=3))["top_count"], 3)
+
+    def test_potential_pool_covers_nine_candidates(self):
+        products = [dict(key=f"1:{i}", score=100 - i, factors=dict(raw_score=100 - i)) for i in range(1, 15)]
+        self.assertEqual(len(modern.potential_pool(products, DEFAULTS)), 9)
 
 
 if __name__ == "__main__":

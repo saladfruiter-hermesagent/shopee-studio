@@ -3,7 +3,10 @@
 > Plano autocontido para quem for implementar (humano ou outro LLM). Leia inteiro antes de mexer no código.
 > Origem: comparação com o processo `shopee-trend-video` de um amigo do usuário (documento de 04/11/2026),
 > analisada em 09/11/2026. O item "galeria com 3 fotos reais no Flow" (captura da página do produto pelo
-> navegador logado) **ficou fora deste plano** a pedido do usuário — ele vai avaliar à parte.
+> navegador logado) **foi abortado em 10/11/2026**: os cookies de segurança da Shopee (`SPC_SEC_SI`,
+> `AC_CERT_D`) vivem ~1 dia, então a raspagem exigiria login + captcha manual diário no noVNC. O Flow
+> continua recebendo **uma** foto de referência (`imageUrl` da API). O caminho até essa decisão está em
+> `PLANO.md` (busca por "galeria").
 
 ## 0. Resumo
 
@@ -52,6 +55,9 @@ e o vídeo desse produto segue esse modo mesmo que a preferência mude depois (o
 | D6 | Selo de compra nos últimos 3,5 s: cápsula "★ 4,9 • 206 vendidos" + botão laranja pulsante "CONFIRA NO PRODUTO MARCADO", acima da legenda falada (a faixa inferior fica livre para o card do app). | padrão proposto — confirmar no vídeo de teste |
 | D7 | Potencial de vídeo pela IA (nota 0–10 antes de escolher) fica atrás de uma chave própria, **desligada** por padrão (custa uma chamada de modelo por consulta). | padrão proposto |
 | D8 | Constantes da fórmula (0,7 / 0,6 / 1,4 / 1,15 / R$ 400 / 1.500 vendas) ficam fixas no código, documentadas, sem campo na interface (YAGNI). | padrão proposto |
+| D9 | **Quantidade de ofertas padrão = 3** (era 5), compartilhada pelos dois modos. Com 3, o potencial de vídeo avalia 9 candidatos (`min(12, max(6, 3 × 3))`). | confirmada pelo usuário (10/11/2026) |
+| D10 | Galeria de 3 fotos por produto: **abortada** (10/11/2026) — sessão da Shopee no Camofox expira em ~1 dia; exigiria login diário. O Flow segue com 1 imagem. | confirmada pelo usuário |
+| D11 | O potencial de vídeo **não elimina** candidato: só reordena antes da seleção (quantidade, loja, tipo e cota por categoria continuam valendo). | confirmada pelo usuário |
 
 ## 3. Fatos da API usados
 

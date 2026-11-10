@@ -56,7 +56,7 @@ class RankingTest(unittest.TestCase):
         self.assertEqual(len(products),1)
         self.assertIn("flexibilizada",warning)
     def test_categories_do_not_limit_products(self):
-        _,selected,warning=rank_offers([node(i,productCatIds=[1]) for i in range(1,7)],DEFAULTS)
+        _,selected,warning=rank_offers([node(i,productCatIds=[1]) for i in range(1,7)],dict(DEFAULTS,top_count=5))
         self.assertEqual(len(selected),5)
         self.assertEqual(warning,"")
         self.assertNotIn("productCatId",shopee_query(DEFAULTS,1))
@@ -105,7 +105,8 @@ class EngineTest(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store=Store(self.temp.name)
-        self.store.save_settings(dict(schedule_enabled=True,auto_send=False))
+        # top_count explícito: o padrão (3, D9) muda com o produto; estes testes foram escritos para 5.
+        self.store.save_settings(dict(schedule_enabled=True,auto_send=False,top_count=5))
         sleeper=patch("core.time.sleep")
         sleeper.start()
         self.addCleanup(sleeper.stop)

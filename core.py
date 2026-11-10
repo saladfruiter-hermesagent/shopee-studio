@@ -28,7 +28,7 @@ TZ = ZoneInfo("America/Sao_Paulo")
 DEFAULTS = dict(keyword="", min_rating=4.5, relax_rating=False,
                 fallback_rating=4.0, min_price=0.0, max_price=500.0, min_sales=0,
                 min_commission=0.0, repeat_days=7, per_shop=2,
-                top_count=5, commission_weight=50, rating_weight=30, sales_weight=20,
+                top_count=3, commission_weight=50, rating_weight=30, sales_weight=20,
                 schedule_time="12:00", schedule_enabled=True, auto_send=False,
                 max_pages=100, page_limit=20,
                 video_enabled=True, video_daily_credits=75, video_cost=15, video_model="Omni 1.1 Flash",
