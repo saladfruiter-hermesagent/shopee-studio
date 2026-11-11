@@ -10,9 +10,22 @@ async function studioLoad(){
  try{studioData=await api('/studio');}catch(e){return toast(e.message);}
  renderStudioLists();
 }
-function studioTabs(name){studioTab=name;document.querySelectorAll('[data-studio-tab]').forEach(b=>b.classList.toggle('active',b.dataset.studioTab===name));$('#studio-day').hidden=name!=='day';$('#studio-manual').hidden=name!=='manual';}
+function studioTabs(name){
+ studioTab=name;
+ document.querySelectorAll('[data-studio-tab]').forEach(b=>{const active=b.dataset.studioTab===name;b.classList.toggle('active',active);b.setAttribute('aria-selected',active?'true':'false');b.tabIndex=active?0:-1;});
+ $('#studio-day').hidden=name!=='day';$('#studio-manual').hidden=name!=='manual';
+}
+/* Um tablist de verdade responde às setas: seleção acompanha o foco (Home/End nas pontas). */
+function studioTabKeys(event){
+ const tabs=Array.from(document.querySelectorAll('[data-studio-tab]'));
+ const index=tabs.indexOf(event.currentTarget);if(index<0)return;
+ const last=tabs.length-1;
+ const next={ArrowRight:(index+1)%tabs.length,ArrowLeft:(index+last)%tabs.length,Home:0,End:last}[event.key];
+ if(next===undefined)return;
+ event.preventDefault();tabs[next].focus();studioTabs(tabs[next].dataset.studioTab);
+}
 function studioCard(item,action){
- return '<article class="studio-item">'+(item.image?'<img src="'+esc(item.image)+'" alt="" loading="lazy" referrerpolicy="no-referrer">':'<div class="studio-noimg">sem foto</div>')+
+ return '<article class="studio-item">'+(item.image?'<img src="'+esc(item.image)+'" alt="" width="84" height="84" decoding="async" loading="lazy" referrerpolicy="no-referrer">':'<div class="studio-noimg">sem foto</div>')+
   '<div><h3 title="'+esc(item.name)+'">'+esc(item.name)+'</h3><p class="muted">'+money(item.price)+' · comissão '+money(item.commission)+'</p>'+(item.note?'<p class="studio-note'+(item.bad?' bad':'')+'">'+esc(item.note)+'</p>':'')+action+'</div></article>';
 }
 function renderStudioLists(){
@@ -54,12 +67,12 @@ function renderJob(){const j=studioDraft.job,box=$('#studio-job');if(!box)return
 function renderEditor(){
  const s=studioDraft,p=s.product,r=s.reservation,running=s.job?.status==='running';
  const head='<button type="button" class="text-button studio-back" data-studio-back>← Voltar à lista</button>'+
-  '<article class="panel studio-head">'+(p.image?'<img src="'+esc(p.image)+'" alt="" referrerpolicy="no-referrer">':'')+'<div><p class="eyebrow">'+(s.origin==='dia'?'DO DIA':'MANUAL · fora do teto diário')+'</p><h2>'+esc(p.name)+'</h2>'+
+  '<article class="panel studio-head">'+(p.image?'<img src="'+esc(p.image)+'" alt="" width="120" height="120" decoding="async" referrerpolicy="no-referrer">':'')+'<div><p class="eyebrow">'+(s.origin==='dia'?'DO DIA':'MANUAL · fora do teto diário')+'</p><h2>'+esc(p.name)+'</h2>'+
   '<p class="muted">'+money(p.price)+' · comissão '+money(p.commission)+' · ★ '+Number(p.rating||0).toFixed(1)+' · '+Number(p.sales||0).toLocaleString('pt-BR')+' vendas · <a href="'+esc(p.link)+'" target="_blank" rel="noopener noreferrer">Ver anúncio ↗</a></p>'+
   (r?'<p class="studio-note'+(r.fallback?' bad':'')+'">'+(r.fallback?'Passou do corte: o produto seguiu para o vídeo automático.':'Reservado para você até '+hm(r.deadline)+'. Sem nenhuma geração até lá, vira vídeo automático.')+'</p>':'')+
   s.warnings.map(w=>'<p class="warning">'+esc(w)+'</p>').join('')+'</div></article><p id="studio-job" hidden></p>';
  const photos='<article class="panel"><p class="eyebrow">1 · FOTOS</p><h3>Referências do produto</h3><p class="hint">Mande fotos de ângulos diferentes: frente, verso, detalhes, o produto na mão (mostra o tamanho). A ★ marca a principal. As fotos ficam só no painel.</p><div class="studio-photos">'+
-  s.photos.map(ph=>'<figure class="'+(ph.main?'main':'')+'"><img src="'+esc(ph.url)+'" alt="" referrerpolicy="no-referrer"><figcaption>'+(ph.source==='api'?'Anúncio':'Sua foto')+'</figcaption><div><button type="button" title="Usar como principal" data-photo-main="'+esc(ph.id)+'">'+(ph.main?'★':'☆')+'</button><button type="button" title="Remover" data-photo-remove="'+esc(ph.id)+'">✕</button></div></figure>').join('')+
+  s.photos.map(ph=>'<figure class="'+(ph.main?'main':'')+'"><img src="'+esc(ph.url)+'" alt="" width="110" height="110" decoding="async" referrerpolicy="no-referrer"><figcaption>'+(ph.source==='api'?'Anúncio':'Sua foto')+'</figcaption><div><button type="button" title="Usar como principal" data-photo-main="'+esc(ph.id)+'">'+(ph.main?'★':'☆')+'</button><button type="button" title="Remover" data-photo-remove="'+esc(ph.id)+'">✕</button></div></figure>').join('')+
   '</div><label class="secondary studio-upload'+(s.user_photos>=s.max_photos?' disabled':'')+'">+ Adicionar fotos · '+s.user_photos+' de '+s.max_photos+' suas<input id="studio-files" type="file" accept="image/*" multiple '+(s.user_photos>=s.max_photos?'disabled':'')+'></label></article>';
  const facts='<article class="panel"><p class="eyebrow">2 · FICHA VISUAL</p><h3>O que dá para ver no produto</h3><p class="hint">A IA descreve só o que aparece nas fotos. Corrija o que estiver errado: o roteiro e o prompt só podem usar o que estiver aqui.</p>'+
   '<button type="button" class="secondary" data-studio-run="facts" '+(running?'disabled':'')+'>'+(s.facts?'Descrever de novo':'Descrever as fotos com a IA')+'</button><textarea id="studio-facts" rows="8" maxlength="1500" placeholder="- Pote transparente com tampa azul&#10;- Quatro travas laterais">'+esc(s.facts)+'</textarea><button type="button" class="secondary" data-studio-facts-save>Salvar ficha</button></article>';
@@ -106,7 +119,7 @@ async function uploadPhotos(files){
  if(list.length<files.length)toast('Só cabem '+studioDraft.max_photos+' fotos suas por produto.');else toast('Fotos enviadas.');
 }
 
-document.querySelectorAll('[data-studio-tab]').forEach(b=>b.onclick=()=>studioTabs(b.dataset.studioTab));
+document.querySelectorAll('[data-studio-tab]').forEach(b=>{b.onclick=()=>studioTabs(b.dataset.studioTab);b.addEventListener('keydown',studioTabKeys);});
 document.querySelector('[data-view="studio"]').addEventListener('click',()=>{if(!studioDraft)studioLoad();});
 $('#studio-link-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;
  try{studioDraft=await post('/studio/manual',{url:$('#studio-link').value.trim()});$('#studio-link').value='';showEditor();}catch(error){toast(error.message);}finally{b.disabled=false;}};
