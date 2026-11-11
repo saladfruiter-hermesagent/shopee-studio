@@ -29,6 +29,13 @@ Painel pessoal para pesquisar, selecionar e acompanhar ofertas de afiliados Shop
 - **Enviar sem vídeo:** cada card da seleção que ainda não foi entregue tem o botão **"Enviar sem vídeo"**. Ele mostra a mensagem exata que vai ao Telegram (nome curto, descrição e links numerados) e, ao confirmar, envia na hora: **foto do anúncio + legenda**, ou só texto se a foto não baixar. Serve quando o vídeo não sai (fila do Flow, teto de créditos, falha) e é uma alternativa ao envio com vídeo: o produto fica "entregue" e um vídeo ainda na fila para ele é cancelado. O envio não se repete para o mesmo produto.
 - Login no painel, proteção CSRF e limitação de tentativas de login. Segredos ficam fora do Git e da imagem.
 
+## Painel no navegador
+
+- Trocar de seção usa *view transition* quando o navegador suporta e o sistema não pediu menos movimento; o foco vai para o título da seção (leitores de tela anunciam a troca) e a aba atual fica marcada com `aria-current`.
+- O polling de 5 s só redesenha os cards e a tabela do histórico quando algo muda de fato: o foco e o `select` de triagem em uso sobrevivem à atualização. Cards abaixo das duas primeiras fileiras usam `content-visibility: auto` (com estimativa de altura) para não custar layout enquanto estão fora da tela.
+- Com um modal aberto o resto da página fica inerte: em vez de um toast atrás do diálogo, o retorno do "Copiar texto" aparece dentro dele (`role="status"` + texto do botão) e qualquer outro aviso espera o modal fechar.
+- O modal tem nome acessível (`aria-labelledby`), fecha com Esc, com o gesto de voltar do navegador (quando suportado) e com clique fora (`closedby="any"`); a página não rola atrás dele.
+
 ## Modos: Legacy e Moderno
 
 Preferências → **Modo** escolhe como os produtos e os vídeos são escolhidos. Vale para as próximas consultas; cada produto guarda o modo com que foi escolhido (`mode`), e o vídeo dele segue esse modo.

@@ -3,8 +3,13 @@ const $=s=>document.querySelector(s),money=n=>new Intl.NumberFormat('pt-BR',{sty
 const date=s=>s?new Date(s).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state,csrf='',activeRun=null,allOffers=false,sendingRun=null,wasBusy=false,providers=[],noVideoKey=null;
+let pendingToasts=[],lastOffersSig='',lastHistorySig='',copyStatusTimer=null;
 const labels={ready:'Pronta',running:'Consultando',analyzing:'Analisando',failed:'Falhou',not_sent:'Não enviado',sending:'Enviando',sent:'Confirmado',unknown:'Não confirmado',queued:'Aguardando vídeos',partial:'Parcial',new:'Ainda não avaliado',planned:'Vou divulgar',published:'Já divulguei',discarded:'Descartar'};
-function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').hidden=true,6500);}
+function showToast(message){const el=$('#toast');el.textContent=message;el.hidden=false;clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>{el.hidden=true;},6500);}
+/* Com o modal aberto o resto do documento fica inerte: um toast de fundo não é visto nem anunciado.
+   A mensagem fica na fila e aparece quando o diálogo fecha. */
+function toast(message){const modal=$('#modal');if(modal&&modal.open){pendingToasts.push(message);return;}showToast(message);}
+function flushToasts(){if(!pendingToasts.length)return;const message=pendingToasts[pendingToasts.length-1];pendingToasts.length=0;showToast(message);}
 async function api(path,options={}){
  const response=await fetch('/api'+path,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...options.headers}});
  const result=await response.json();
@@ -12,7 +17,12 @@ async function api(path,options={}){
  return result;
 }
 const post=(path,value={})=>api(path,{method:'POST',body:JSON.stringify(value)});
-function view(name){document.querySelectorAll('.view').forEach(e=>e.hidden=e.id!==name);document.querySelectorAll('[data-view]').forEach(e=>e.classList.toggle('active',e.dataset.view===name));$('#page-title').textContent={overview:'Seu próximo Top 5.',studio:'Estúdio.',history:'Um radar com memória.',settings:'Do seu jeito.'}[name];$('#page-subtitle').textContent={overview:'Menos ruído. Mais espaço para escolher o que vale divulgar.',studio:'Suas fotos, um roteiro forte e você decidindo cada vídeo.',history:'Veja o que mudou, o que foi enviado e o que merece outra olhada.',settings:'Ajuste a seleção, sua rotina e o destino das ofertas.'}[name];}
+const viewTitles={overview:'Seu próximo Top 5.',studio:'Estúdio.',history:'Um radar com memória.',settings:'Do seu jeito.'};
+const viewSubtitles={overview:'Menos ruído. Mais espaço para escolher o que vale divulgar.',studio:'Suas fotos, um roteiro forte e você decidindo cada vídeo.',history:'Veja o que mudou, o que foi enviado e o que merece outra olhada.',settings:'Ajuste a seleção, sua rotina e o destino das ofertas.'};
+function applyView(name){document.querySelectorAll('.view').forEach(e=>e.hidden=e.id!==name);document.querySelectorAll('[data-view]').forEach(e=>{const active=e.dataset.view===name;e.classList.toggle('active',active);if(active)e.setAttribute('aria-current','page');else e.removeAttribute('aria-current');});$('#page-title').textContent=viewTitles[name];$('#page-subtitle').textContent=viewSubtitles[name];$('#page-title').focus({preventScroll:true});}
+/* A transição é enfeite: só entra sem prefers-reduced-motion. O foco no título vale nos dois caminhos,
+   porque a view transition não gerencia foco: quem usa teclado ou leitor de tela ficaria sem contexto. */
+function view(name){const run=()=>applyView(name);if(document.startViewTransition&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){try{document.startViewTransition(run);return;}catch(error){}}run();}
 document.querySelectorAll('[data-view]').forEach(e=>e.onclick=()=>view(e.dataset.view));
 $('#login-form').onsubmit=async e=>{e.preventDefault();$('#login-error').textContent='';try{const r=await post('/login',{password:$('#password').value});csrf=r.csrf;$('#password').value='';await refresh(true);}catch(error){$('#login-error').textContent=error.message;}};
 $('#logout').onclick=async()=>{try{await post('/logout');$('#app').hidden=true;$('#login').hidden=false;}catch(e){toast(e.message);}};
@@ -31,10 +41,13 @@ async function refresh(fillForms=false){
  if(state.schedule?.status==='unknown')warnings.push('Entrega não confirmada. Verifique o Telegram antes de enviar uma nova consulta.');
  $('#notice').textContent=warnings.join(' ');$('#notice').hidden=!warnings.length;
  if(!activeRun||wasBusy&&!state.busy)activeRun=state.latest;else if(state.latest?.id===activeRun.id)activeRun=state.latest;
- wasBusy=state.busy;renderOffers();
+ wasBusy=state.busy;const offersSig=offersSignature();if(offersSig!==lastOffersSig){lastOffersSig=offersSig;renderOffers();}
  $('#events').innerHTML=state.events.slice(0,5).map(e=>'<div class="event"><i class="event-dot '+esc(e.level)+'"></i><span>'+esc(e.message)+'</span><time>'+date(e.created)+'</time></div>').join('')||'<p class="muted">As atividades aparecerão aqui após a primeira consulta.</p>';
  $('#weights').innerHTML=state.settings.mode==='modern'?[['×nota³','Avaliação'],['√R$','Comissão'],['até ×2,5','Tendência'],['fora','Top e vitrine']].map(([k,v])=>'<div><strong>'+k+'</strong><span>'+v+'</span></div>').join(''):[['commission_weight','Comissão'],['rating_weight','Avaliação'],['sales_weight','Vendas']].map(([k,v])=>'<div><strong>'+state.settings[k]+'%</strong><span>'+v+'</span></div>').join('');
- $('#history-body').innerHTML=state.runs.map(r=>'<tr><td>#'+r.id+' · '+date(r.started)+'</td><td>'+(r.source==='scheduled'?'Agendada':'Manual')+'</td><td>'+r.scanned+'</td><td>'+esc(labels[r.status])+'</td><td>'+esc(labels[r.delivery])+'</td><td><button class="secondary" data-run="'+r.id+'">Ver</button></td></tr>').join('')||'<tr><td colspan="6">Nenhuma consulta registrada.</td></tr>';
+ const historySig=JSON.stringify(state.runs.map(r=>[r.id,r.status,r.delivery,r.scanned,r.sent_at]));
+ if(historySig!==lastHistorySig){lastHistorySig=historySig;
+ $('#history-body').innerHTML=state.runs.map(r=>'<tr><td>#'+r.id+' · '+date(r.started)+'</td><td>'+(r.source==='scheduled'?'Agendada':'Manual')+'</td><td>'+r.scanned+'</td><td>'+esc(labels[r.status])+'</td><td>'+esc(labels[r.delivery])+'</td><td><button class="secondary" data-run="'+r.id+'">Ver</button></td></tr>').join('')||'<tr><td colspan="6">Nenhuma consulta registrada.</td></tr>';}
+
  document.querySelectorAll('[data-run]').forEach(b=>b.onclick=async()=>{try{activeRun=await api('/runs/'+b.dataset.run);allOffers=false;renderOffers();view('overview');}catch(e){toast(e.message);}});
  if(fillForms){$('#shopee-app-id').value=state.shopee_app_id||'';for(const [key,value] of Object.entries(state.settings)){const input=$('#settings-form').elements.namedItem(key);if(input){if(input.type==='checkbox')input.checked=value;else input.value=value;}}syncMode();$('#telegram-chat').value=state.telegram.chat_id||'';$('#telegram-topic').value=state.telegram.thread_id||'';}
  renderWorker();renderVideo();
@@ -42,6 +55,7 @@ async function refresh(fillForms=false){
  $('#telegram-status').textContent=state.telegram.configured?'Bot configurado · chat '+state.telegram.chat_id+(state.telegram.thread_id?' · tópico '+state.telegram.thread_id:' · sem tópico específico'):'Configure seu bot e o destino. Nenhuma mensagem será enviada ao salvar.';
 }
 function renderOffers(){
+ const focused=document.activeElement,focusKey=focused&&focused.closest&&focused.closest('#offers')?(focused.dataset.key||focused.dataset.product||focused.dataset.videoCreate||focused.dataset.videoResend||''):'';
  const s=activeRun?.settings||state.settings;
  const modern=s.mode==='modern';
  $('#filter-summary').innerHTML=(modern?['Modo Moderno',s.modern_categories?'Categorias '+s.modern_categories.split(',').join(', '):(s.keyword||'Lista geral por vendas'),'Nota ≥ '+s.modern_min_rating,money(s.modern_min_price)+' a '+(s.modern_max_price?money(s.modern_max_price):'sem teto'),'Fora: top de afiliados, vitrine e estourados']:['Modo Legacy',s.keyword||'Todos os produtos','Nota ≥ '+s.min_rating,s.max_price?'Até '+money(s.max_price):'Sem teto de preço']).concat(['Anúncios enviados não se repetem',activeRun?'Consulta #'+activeRun.id:'Aguardando primeira consulta']).map(v=>'<span>'+esc(v)+'</span>').join('');
@@ -59,7 +73,11 @@ function renderOffers(){
   $('#modal-content').textContent=d.text;$('#confirm-send').hidden=true;$('#copy-modal').hidden=false;
   $('#confirm-photo').hidden=false;$('#confirm-photo').disabled=!d.configured;$('#modal').showModal();}catch(e){toast(e.message);}});
  document.querySelectorAll('[data-product]').forEach(el=>el.onclick=async()=>{try{const p=products.find(p=>p.key===el.dataset.product),h=await api('/products/'+encodeURIComponent(p.key)+'/history');$('#modal-title').textContent='Por que esta oferta?';$('#modal-destination').textContent=p.name;$('#modal-content').textContent=p.reasons.join('\n')+contentText(p)+videoText(p)+'\n\nEVOLUÇÃO OBSERVADA\n'+h.map(x=>date(x.started)+' · '+money(x.price)+' · comissão '+money(x.commission)).join('\n');$('#confirm-send').hidden=true;$('#copy-modal').hidden=true;$('#confirm-photo').hidden=true;$('#modal').showModal();}catch(e){toast(e.message);}});
+ if(focusKey){const again=Array.from(document.querySelectorAll('#offers [data-key],#offers [data-product],#offers [data-video-create],#offers [data-video-resend]')).find(el=>(el.dataset.key||el.dataset.product||el.dataset.videoCreate||el.dataset.videoResend)===focusKey);if(again)again.focus({preventScroll:true});}
+ lastOffersSig=offersSignature();
 }
+/* Só o que muda o card entra na assinatura: o polling de 5 s para de reconstruir 5.800 nós à toa. */
+function offersSignature(){return JSON.stringify([activeRun&&activeRun.id,activeRun&&activeRun.status,activeRun&&activeRun.error,activeRun&&activeRun.warning,allOffers,(activeRun&&activeRun.products||[]).map(p=>[p.key,p.selected,p.score,p.price,p.decision,p.delivery,p.video&&p.video.state,p.video&&p.video.id])]);}
 $('#show-all').onclick=()=>{allOffers=!allOffers;renderOffers();};
 $('#collect').onclick=async()=>{try{await post('/run-now');activeRun=null;toast('Consulta iniciada. Nenhuma mensagem será enviada por esta ação.');await refresh();}catch(e){toast(e.message);}};
 $('#settings-form').onsubmit=async e=>{e.preventDefault();const r={};for(const[k,v]of Object.entries(state.settings)){const i=e.target.elements.namedItem(k);if(!i)continue;r[k]=typeof v==='boolean'?i.checked:typeof v==='number'?Number(i.value):i.value.trim();}try{await post('/settings',r);await refresh(true);toast('Preferências salvas.');}catch(error){toast(error.message);}};
@@ -88,7 +106,9 @@ function searchDetails(a){const s=a.search;if(!s)return '';const c=counts(a.equi
 function copyText(text){if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(text);
  const area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','');area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();document.execCommand('copy');area.remove();return Promise.resolve();}
 $('#confirm-photo').onclick=async()=>{const b=$('#confirm-photo');b.disabled=true;try{const r=await post('/runs/'+activeRun.id+'/products/'+encodeURIComponent(noVideoKey)+'/no-video');$('#modal').close();toast('Enviado ao Telegram '+(r.photo?'com a foto do anúncio.':'só o texto.'));activeRun=await api('/runs/'+activeRun.id);await refresh();}catch(e){toast(e.message);}finally{b.disabled=false;}};
-$('#copy-modal').onclick=async()=>{try{await copyText($('#modal-content').textContent);toast('Texto copiado.');}catch(e){toast('Não consegui copiar; selecione o texto e use Ctrl+C.');}};
+$('#copy-modal').onclick=async()=>{const status=$('#copy-status'),button=$('#copy-modal');clearTimeout(copyStatusTimer);try{await copyText($('#modal-content').textContent);status.textContent='Texto copiado.';status.dataset.state='ok';button.textContent='Copiado ✓';}catch(e){status.textContent='Não consegui copiar; selecione o texto e use Ctrl+C.';status.dataset.state='fail';}copyStatusTimer=setTimeout(resetCopyStatus,5000);};
+function resetCopyStatus(){clearTimeout(copyStatusTimer);const status=$('#copy-status');status.textContent='';status.dataset.state='';$('#copy-modal').textContent='Copiar texto';}
+$('#modal').addEventListener('close',()=>{resetCopyStatus();flushToasts();});
 function contentText(p){const a=p.analysis;if(!a)return '';const lines=['','',a.status==='ok'?'CONTEÚDO · '+a.provider:'CONTEÚDO · texto automático (sem validação do modelo)','Legenda ('+a.caption_length+'/150 caracteres):',a.caption,'','Prompt Google Flow (10 s):',a.prompt,'','LINKS ('+a.links.length+'):',...a.links.map((l,i)=>(i+1)+'. '+l.link+' · '+l.shop)];
  if(a.search)lines.push('','BUSCA DE EQUIVALENTES',...searchLines(a));
  if(a.equivalents.length)lines.push('','ANÚNCIOS COMPARADOS',...a.equivalents.map(c=>'• '+(c.round?'R'+c.round+' · ':'')+c.name.slice(0,80)+' · '+c.shop+' · '+money(c.price)+' — '+(verdicts[c.verdict]||c.verdict)+': '+c.reason));

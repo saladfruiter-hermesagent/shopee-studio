@@ -108,3 +108,30 @@ Branch `feat/busca-progressiva-video-unico`. Testes: `python -m unittest discove
 - Pausa da fila, teto atingido e vídeo desligado deixam o produto "não entregue" (com "Gerar vídeo ↻"), não pendente.
 - A prévia de uma consulta já enviada mostra a mensagem congelada e o estado de cada produto.
 - Fallback do modelo continua entregando o texto automático, agora com o aviso dentro da legenda do vídeo.
+
+## Melhorias web do painel (módulo modern-web-guidance)
+
+Auditoria em 11/11/2026 no código que roda em produção (`origin/main` 89d74e8, conferido byte a byte
+contra o container do thevault). O `legacy-scan` do modern-web-guidance deu **0 achados** nas 33 guias
+com regra determinística: o ganho não é remover padrão antigo, é aplicar padrão moderno ausente.
+
+| # | Item | Estado |
+|---|---|---|
+| P1 | Modal aberto deixa o resto da página inerte: o retorno de "Copiar texto" passou a ser `#copy-status` (`role="status"` no diálogo + texto do botão) e `toast()` enfileira a mensagem para aparecer quando o modal fechar | feito |
+| P2 | Polling de 5 s só redesenha cards e histórico quando a assinatura dos dados muda; foco do card é restaurado depois do render; `content-visibility: auto` + `contain-intrinsic-size` nos cards a partir do 7º | feito |
+| P3 | `view()` com `document.startViewTransition` (sem `prefers-reduced-motion: reduce`), foco no título da seção e `aria-current="page"` na aba | feito |
+| P4 | `<dialog>` com `aria-labelledby`, `closedby="any"` e `overscroll-behavior: contain` no diálogo e no `::backdrop` | feito |
+| P5 | Preferências: erro por campo (`:user-invalid`, `aria-invalid`, foco no primeiro inválido), `<fieldset>/<legend>` e custo em créditos no botão de confirmar envio | pendente |
+| P6 | Estúdio: `input[type=file]` com `display:none` é inalcançável por teclado (usar `.visually-hidden`); `role="tablist"` sem `aria-selected`/`role="tabpanel"`; fotos sem `width`/`height` | pendente |
+| P7 | Modo escuro: `<meta name="color-scheme">` + `color-scheme` no `:root` + `light-dark()`; exige tokenizar ~100 usos de cor (47 hex distintos) | pendente |
+| P8 | Servidor: `Cache-Control: no-store` em `/static` e nenhuma compressão (waitress não comprime); HTTPS local habilitaria `navigator.clipboard` — hoje produção é contexto inseguro e o "Copiar texto" sempre cai no `execCommand` | pendente |
+
+Medições antes/depois (banco fictício com 200 ofertas, Playwright, `127.0.0.1`):
+`refresh()` 52–56 ms com 5.800 nós reconstruídos a cada 5 s → **0 reconstruções** quando nada muda;
+foco no `select` de triagem sobrevivia 6,5 s antes de ir para o `body` → **permanece**;
+toast com modal aberto ficava atrás do diálogo (`elementFromPoint` devolvia `modal`) → mensagem de cópia
+aparece dentro do modal e os demais avisos esperam o fechamento.
+
+Nada aqui gasta crédito do Flow, chama a Shopee ou o Telegram: é `templates/index.html`,
+`static/app.js` e `static/style.css`, validados com banco fictício (receita em
+`references/painel-validacao-local.md` da skill).
