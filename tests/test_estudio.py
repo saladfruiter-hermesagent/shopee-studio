@@ -324,7 +324,7 @@ class StudioTest(unittest.TestCase):
         self.assertIn("formato", refused.json["error"])
         self.assertEqual(self.post(f"/studio/{sid}/format", dict(format="nada")).status_code, 400)
         self.post(f"/studio/{sid}/facts", dict(text="- Pote transparente com tampa azul\n- Quatro travas"))
-        self.post(f"/studio/{sid}/format", dict(format="teste_desafio"))
+        self.post(f"/studio/{sid}/format", dict(format="hands_on"))
         self.assertEqual(self.post(f"/studio/{sid}/scripts").status_code, 202)
         result = self.client.get(f"/api/studio/{sid}").json
         self.assertEqual(result["job"]["status"], "ok", result["job"])
@@ -333,11 +333,14 @@ class StudioTest(unittest.TestCase):
         self.assertEqual(result["caption"]["problems"], [])
         prompt = self.runner.calls[-1]["prompt"]
         self.assertIn("Pote transparente com tampa azul", prompt)
-        self.assertIn("teste ou desafio", prompt)
+        self.assertIn("hands-on — close das mãos", prompt)
+        self.assertIn("problema e solução, antes e depois", prompt)
+        self.assertIn("voz em off", prompt)
         self.assertEqual(result["prompt"], "")
         chosen = self.post(f"/studio/{sid}/scripts/1", dict(choose=True)).json
         self.assertEqual(chosen["chosen"], 1)
-        self.assertIn("Formato: teste ou desafio", chosen["prompt"])
+        self.assertIn("Formato: hands-on", chosen["prompt"])
+        self.assertIn("Narração em off", chosen["prompt"])
         self.assertIn("Somente mãos", chosen["prompt"])
         self.assertIn("Fatos do produto (não contradiga): Pote transparente com tampa azul; Quatro travas", chosen["prompt"])
         self.assertIn(SCRIPTS[1]["narration"], chosen["prompt"])
@@ -347,7 +350,7 @@ class StudioTest(unittest.TestCase):
         self.use_runner()
         draft = self.post("/studio/manual", dict(url=SHORT)).json
         sid = draft["id"]
-        self.post(f"/studio/{sid}/format", dict(format="uso_real"))
+        self.post(f"/studio/{sid}/format", dict(format="pov"))
         self.post(f"/studio/{sid}/scripts")
         edited = self.post(f"/studio/{sid}/scripts/0", dict(script=dict(narration="Gente, que pote bom."),
                                                              choose=True)).json
@@ -361,7 +364,7 @@ class StudioTest(unittest.TestCase):
         self.assertTrue(caption["caption"]["problems"])
 
     def test_scripts_check_rules(self):
-        check = studio_module.scripts_check("Kit pote", "uso_real", ())
+        check = studio_module.scripts_check("Kit pote", "pov", ())
         self.assertEqual(check(SCRIPTS_OUTPUT), [])
         self.assertIn("scripts deve ter exatamente 3 roteiros", check(dict(SCRIPTS_OUTPUT, scripts=SCRIPTS[:2])))
         same = [dict(s, narration=SCRIPTS[0]["narration"]) for s in SCRIPTS]
@@ -373,6 +376,41 @@ class StudioTest(unittest.TestCase):
         prompt = studio_module.studio_prompt(SCRIPTS[0], "provador", "", 1)
         self.assertNotIn("Somente mãos", prompt)
         self.assertNotIn("mesmo produto de ângulos diferentes", prompt)
+
+    def test_formats_follow_the_studio_list(self):
+        formats = self.client.get("/api/studio").json["formats"] 
+        self.assertEqual([f["label"] for f in formats], ["POV", "Hands-on", "Selfie frontal", "Falando para a câmera",
+                                                         "Provador", "Formato livre (UGC)"])
+        rules = {f["key"]: (f["person"], f["speaks"]) for f in formats}
+        self.assertEqual(rules, {"pov": (False, False), "hands_on": (False, False), "selfie": (True, True),
+                                 "falando": (True, True), "provador": (True, False), "ugc": (True, True)})
+        for key in ("uso_real", "teste_desafio"):  # os formatos do modo automático não valem aqui
+            draft = self.post("/studio/manual", dict(url=SHORT)).json
+            self.assertEqual(self.post(f"/studio/{draft['id']}/format", dict(format=key)).status_code, 400)
+        ugc = studio_module.studio_prompt(SCRIPTS[0], "ugc", "", 2)
+        self.assertTrue(ugc.startswith("Vídeo vertical 9:16 estilo UGC realista"), ugc)
+        self.assertIn("A pessoa fala olhando para a câmera", ugc)
+        self.assertNotIn("Somente mãos", ugc)
+        self.assertIn("Narração em off", studio_module.studio_prompt(SCRIPTS[0], "provador", "", 1))
+        facts = "- Tampa azul.\n- " + "x" * 690 + "\n- Quatro travas\nCuidados para a IA de vídeo:\n- Não mostrar encaixe por clique"
+        prompt = studio_module.studio_prompt(SCRIPTS[0], "pov", facts, 1)
+        self.assertIn("Fatos do produto (não contradiga): Tampa azul; Quatro travas\n", prompt)  # item longo fica fora inteiro
+        self.assertIn("Cuidados: Não mostrar encaixe por clique\n", prompt)
+        talking = studio_module.scripts_prompt(dict(name="Kit pote"), "", "falando", (), ["P"])
+        self.assertIn("FALADA pela pessoa em cena", talking)
+        self.assertIn("Descreva-a uma vez", talking)
+        self.assertIn("Só mãos em cena", studio_module.scripts_prompt(dict(name="Kit pote"), "", "pov", (), ["P"]))
+
+    def test_old_format_must_be_chosen_again(self):
+        self.use_runner()
+        draft = self.post("/studio/manual", dict(url=SHORT)).json
+        with self.store.db() as db:
+            db.execute("UPDATE studio SET format='antes_depois' WHERE id=?", (draft["id"],))
+        result = self.client.get(f"/api/studio/{draft['id']}").json
+        self.assertEqual((result["format"], result["format_label"]), (None, ""))
+        refused = self.post(f"/studio/{draft['id']}/scripts")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("formato", refused.json["error"])
 
     def test_delete_removes_the_photos(self):
         draft = self.post("/studio/manual", dict(url=SHORT)).json

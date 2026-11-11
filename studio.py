@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from analysis import DATA_RULES
-from content import (CAPTION_LIMIT, CLOSING, FORMATS, MODERN_NARRATION_WORDS, SCRIPT_FIELD_LIMIT, VIDEO_SECONDS,
+from content import (CAPTION_LIMIT, CLOSING, MODERN_NARRATION_WORDS, SCRIPT_FIELD_LIMIT, VIDEO_SECONDS,
                      caption_text, copy_problems, modern_script_problems, opening, script_problems, text_length)
 
 MAX_PHOTOS = 6                 # fotos do usuário por produto, além da foto da API
@@ -27,9 +27,38 @@ NARRATION_LIMIT = 300
 ANGLE_LIMIT = 60
 FACTS_SECONDS, SCRIPTS_SECONDS = 300, 480
 SHORT_HOSTS = ("s.shopee.com.br", "shp.ee", "shope.ee")
-STUDIO_FORMATS = {**FORMATS, "provador": "provador — o produto no corpo de uma pessoa (vestindo, calçando ou usando), "
-                                         "mostrando caimento e tamanho real."}
-PERSON_FORMATS = {"provador"}  # formatos em que aparece uma pessoa: a regra de só mãos não vale
+# Formatos do Estúdio = como a câmera filma e quem aparece (os mesmos do ShôStudio). A narrativa (problema→solução,
+# antes/depois, teste…) fica para os ângulos dos 3 roteiros. O modo automático continua com content.FORMATS.
+STUDIO_FORMAT_SPECS = {
+    "pov": dict(label="POV", person=False, speaks=False,
+                text="POV — câmera em primeira pessoa, como se fossem os olhos de quem usa o produto; só as mãos aparecem.",
+                look="Vídeo vertical 9:16 em primeira pessoa (POV), gravado com celular, cenário real de casa."),
+    "hands_on": dict(label="Hands-on", person=False, speaks=False,
+                     text="hands-on — close das mãos manuseando, abrindo, encaixando e testando o produto sobre uma "
+                          "superfície, com foco nos detalhes.",
+                     look="Vídeo vertical 9:16 em close, câmera fixa acima ou à frente das mãos, luz natural."),
+    "selfie": dict(label="Selfie frontal", person=True, speaks=True,
+                   text="selfie frontal — uma pessoa segura o celular com o braço estendido (câmera frontal), mostra o "
+                        "produto perto do rosto e comenta enquanto usa.",
+                   look="Vídeo vertical 9:16 de selfie com a câmera frontal do celular, braço estendido, luz natural."),
+    "falando": dict(label="Falando para a câmera", person=True, speaks=True,
+                    text="falando para a câmera — uma pessoa em plano médio, câmera parada, fala direto para a lente "
+                         "como numa recomendação a uma amiga, segurando e demonstrando o produto.",
+                    look="Vídeo vertical 9:16 em plano médio, câmera parada na altura dos olhos, ambiente de casa."),
+    "provador": dict(label="Provador", person=True, speaks=False,
+                     text="provador — uma pessoa veste, calça ou usa o produto diante do espelho ou da câmera, mostrando "
+                          "caimento, tamanho real e detalhes de perto.",
+                     look="Vídeo vertical 9:16 estilo provador, pessoa de corpo inteiro ou meio corpo, luz natural."),
+    "ugc": dict(label="Formato livre (UGC)", person=True, speaks=True,
+                text="formato livre (UGC) — vídeo caseiro, como se gravado por uma cliente real com o celular: ambiente "
+                     "comum, luz natural, câmera na mão, cortes rápidos entre uso e resultado; a pessoa pode aparecer e falar.",
+                look="Vídeo vertical 9:16 estilo UGC realista, gravado com celular na mão, nada de aparência de comercial."),
+}
+STUDIO_FORMATS = {key: spec["text"] for key, spec in STUDIO_FORMAT_SPECS.items()}
+PERSON_FORMATS = {key for key, spec in STUDIO_FORMAT_SPECS.items() if spec["person"]}  # a regra de só mãos não vale
+SPEAKING_FORMATS = {key for key, spec in STUDIO_FORMAT_SPECS.items() if spec["speaks"]}  # a pessoa fala em cena
+NARRATIVE_ANGLES = ("problema e solução", "antes e depois", "teste ou desafio", "uso na rotina", "detalhes de perto",
+                    "unboxing", "curiosidade de como funciona")
 SCRIPT_FIELDS = ("hook", "demo", "benefit", "cta", "narration")
 PHOTO_ID = re.compile(r"u\d{1,3}")
 
@@ -52,7 +81,8 @@ def _num(value, default=0.0):
 
 
 def format_label(key):
-    return STUDIO_FORMATS[key].split(" — ")[0]
+    spec = STUDIO_FORMAT_SPECS.get(key)
+    return spec["label"] if spec else ""
 
 
 # ---------- link → produto ----------
@@ -189,10 +219,14 @@ def facts_text(output):
 
 def scripts_prompt(product, facts, video_format, banned, names):
     low, high = MODERN_NARRATION_WORDS
-    person = video_format in PERSON_FORMATS
+    person, speaks = video_format in PERSON_FORMATS, video_format in SPEAKING_FORMATS
     banned_text = ", ".join(f'"{o}"' for o in banned) or "nenhuma"
-    people = ("Pode aparecer uma pessoa usando o produto; o rosto não precisa aparecer." if person else
+    people = ("Aparece uma pessoa. Descreva-a uma vez no \"hook\" (idade aproximada, cabelo, roupa simples, onde está) "
+              "para o vídeo manter a mesma pessoa; o público é brasileiro e a cena é do dia a dia, sem cara de comercial."
+              if person else
               "Só mãos em cena (visão em primeira pessoa ou close): nenhum rosto, sorriso ou pessoa de frente para a câmera.")
+    voice = ("A narração é FALADA pela pessoa em cena, olhando para a câmera, em tom de conversa (como quem indica a uma "
+             "amiga), não de locutor." if speaks else "A narração é uma voz em off, natural e animada.")
     return f"""Você escreve roteiros de vídeos curtos de venda para a Shopee Vídeo ({VIDEO_SECONDS} s, vertical 9:16).
 O vídeo é feito por uma IA que recebe as fotos do produto como referência ({", ".join(names)}).
 {DATA_RULES}
@@ -205,11 +239,12 @@ ou nas fotos):
 {facts.strip() or "(sem ficha: use só o nome do anúncio e as fotos)"}
 </ficha>
 
-FORMATO OBRIGATÓRIO: {STUDIO_FORMATS[video_format]}
+FORMATO OBRIGATÓRIO (como a câmera filma e quem aparece): {STUDIO_FORMATS[video_format]}
 
-Escreva 3 roteiros com ângulos DIFERENTES entre si (ex.: a dor do dia a dia, o resultado, a curiosidade de como funciona).
+Escreva 3 roteiros neste formato, cada um com uma ABORDAGEM diferente; escolha as 3 que melhor vendem este produto entre:
+{", ".join(NARRATIVE_ANGLES)}.
 Cada roteiro tem:
-- "angle": o ângulo em até 6 palavras.
+- "angle": a abordagem em até 6 palavras.
 - "hook" (0–2 s): a primeira imagem tem de prender sozinha — o produto ou o problema aparece já no primeiro segundo.
 - "demo" (2–6 s): uma ação concreta e observável com o produto.
 - "benefit" (6–8 s): a PROVA — o resultado visível que mostra o benefício.
@@ -219,6 +254,7 @@ Cada roteiro tem:
   afirmação forte); a última frase cita "{CLOSING}" (ex.: "Toque no {CLOSING}."). Não comece com "Olha" nem "Gente", nem com
   estas aberturas já usadas: {banned_text}. Os 3 roteiros começam de jeitos diferentes. Todo número falado tem de
   aparecer no nome do anúncio; na dúvida, não fale números. Sem preço, desconto, frete, estoque ou urgência.
+  {voice}
 - {people}
 
 LEGENDA (uma só, vale para qualquer roteiro): "description" = uma frase com um benefício verificável e o contexto de uso,
@@ -254,20 +290,37 @@ def scripts_check(name, video_format, banned):
     return check
 
 
+def _bullets(lines, limit):
+    """'- a' lines joined with '; ', cut at a whole item (never mid-word)."""
+    text = ""
+    for line in lines:
+        item = line[2:].strip().rstrip(".;")
+        if item and len(text) + len(item) + 2 <= limit:
+            text += ("; " if text else "") + item
+    return text
+
+
 def studio_prompt(script, video_format, facts, references):
     """Flow prompt of a Studio draft (shown in S1, sent in S2)."""
-    facts_line = "; ".join(line[2:].strip() for line in facts.splitlines() if line.startswith("- "))[:900]
-    lines = [f"Vídeo publicitário vertical 9:16 de {VIDEO_SECONDS} segundos do produto das imagens de referência.",
+    spec = STUDIO_FORMAT_SPECS.get(video_format) or STUDIO_FORMAT_SPECS["hands_on"]
+    facts_part, _, avoid_part = facts.partition("Cuidados para a IA de vídeo:")
+    facts_line = _bullets([l for l in facts_part.splitlines() if l.startswith("- ")], 700)
+    avoid_line = _bullets([l for l in avoid_part.splitlines() if l.startswith("- ")], 450)
+    lines = [f"{str(spec['look']).rstrip('.')}, {VIDEO_SECONDS} segundos, mostrando o produto das imagens de referência.",
              ("As imagens anexadas mostram o mesmo produto de ângulos diferentes. " if references > 1 else "")
              + "Preserve exatamente formato, cores, proporções e componentes do produto. Não acrescente acessórios.",
-             f"Formato: {STUDIO_FORMATS[video_format]}"]
-    if video_format not in PERSON_FORMATS:
+             f"Formato: {spec['text']}"]
+    if not spec["person"]:
         lines.append("Somente mãos aparecem em cena: nenhum rosto e nenhuma pessoa de frente para a câmera.")
     if facts_line:
         lines.append(f"Fatos do produto (não contradiga): {facts_line}")
+    if avoid_line:
+        lines.append(f"Cuidados: {avoid_line}")
+    speech = script["narration"].strip()
     lines += [f"0–2 s, gancho: {script['hook'].strip()}", f"2–6 s, demonstração: {script['demo'].strip()}",
               f"6–8 s, prova: {script['benefit'].strip()}", f"8–10 s, chamada: {script['cta'].strip()}",
-              f"Narração em português do Brasil, voz natural e animada: \"{script['narration'].strip()}\"",
+              (f"A pessoa fala olhando para a câmera, em português do Brasil, tom de conversa, com a boca sincronizada: "
+               f"\"{speech}\"" if spec["speaks"] else f"Narração em off em português do Brasil, voz natural e animada: \"{speech}\""),
               "Sem textos, legendas, logotipos ou marcas d'água na imagem. Sem preços, descontos ou promessas."]
     return "\n".join(lines)
 
@@ -366,7 +419,8 @@ class Studio:
             manual = [self._lite(dict(r)) for r in db.execute(
                 "SELECT * FROM studio WHERE origin='manual' ORDER BY id DESC LIMIT 20")]
         return dict(slots=settings["studio_slots"], cutoff=settings["studio_cutoff"], today=self.today(), manual=manual,
-                    formats=[dict(key=k, label=format_label(k), text=v) for k, v in STUDIO_FORMATS.items()])
+                    formats=[dict(key=k, label=f["label"], text=f["text"], person=f["person"], speaks=f["speaks"])
+                             for k, f in STUDIO_FORMAT_SPECS.items()])
 
     # ---------- rascunhos ----------
     def _row(self, session_id):
@@ -544,7 +598,7 @@ class Studio:
                 raise ValueError("Já existe uma chamada ao modelo em andamento para este produto.")
             if not self.images(row):
                 raise ValueError("Sem fotos: mantenha a foto do anúncio ou envie fotos suas.")
-            if kind == "scripts" and not row["format"]:
+            if kind == "scripts" and row["format"] not in STUDIO_FORMATS:
                 raise ValueError("Escolha o formato antes de pedir os roteiros.")
             label = "Descrevendo as fotos…" if kind == "facts" else "Escrevendo 3 roteiros…"
             self._save(session_id, job=dict(kind=kind, status="running", message=label, started=time.time()))
@@ -624,7 +678,7 @@ class Studio:
         product = json.loads(row["product"])
         photos = json.loads(row["photos"] or "[]")
         scripts = json.loads(row["scripts"] or "null") or {}
-        video_format = row["format"]
+        video_format = row["format"] if row["format"] in STUDIO_FORMATS else None  # formato antigo: escolher de novo
         public_photos = [dict(id=p["id"], source=p["source"], main=bool(p.get("main")),
                               url=product.get("image") if p["source"] == "api" else f"/api/studio/{row['id']}/photos/{p['id']}")
                          for p in photos]

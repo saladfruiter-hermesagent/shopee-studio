@@ -103,8 +103,12 @@ Em cada rascunho:
    subir; ★ marca a principal. Ficam só no volume (`/data/studio/<id>`) e são apagadas com o rascunho.
 2. **Ficha visual:** o modelo descreve só o que aparece nas fotos (P = anúncio, F1… = suas fotos) e o que o vídeo por
    IA tende a errar. Você corrige; roteiro e prompt só podem usar o que está nela.
-3. **Formato:** os 7 do Modo Moderno + **provador** (com pessoa; nele a regra de só mãos não vale).
-4. **Roteiros:** 3 ângulos diferentes, cada um com gancho (0–2 s), demonstração, prova e chamada, e a legenda. Valem as
+3. **Formato** (como a câmera filma e quem aparece): **POV** e **Hands-on** (só mãos, voz em off), **Selfie frontal**,
+   **Falando para a câmera** e **Formato livre (UGC)** (pessoa falando para a câmera, boca sincronizada) e **Provador**
+   (pessoa usando o produto, voz em off). Nos formatos com pessoa a regra de só mãos não vale e o roteiro descreve a
+   pessoa no gancho para ela se manter igual. O modo automático continua com os 7 formatos dele.
+4. **Roteiros:** 3 abordagens diferentes no formato escolhido (o modelo escolhe entre problema e solução, antes e
+   depois, teste, uso na rotina, detalhes, unboxing e curiosidade), cada um com gancho (0–2 s), demonstração, prova e chamada, e a legenda. Valem as
    regras do Modo Moderno (18–25 palavras, termina em "produto marcado", sem "Olha"/"Gente" nem abertura repetida,
    nenhum número fora do nome) e as 3 narrações começam diferente. Edição livre: o card mostra o que fugiu das regras
    sem bloquear. Ao escolher um, aparece o prompt do Flow.

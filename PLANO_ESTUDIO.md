@@ -45,7 +45,7 @@ Escala combinada: **~2 vídeos por dia** feitos no Estúdio, durante algumas sem
 3. **Ficha visual** — o modelo (agy/fallbacks) olha as fotos e devolve fatos visíveis: cor, material, tamanho
    aparente, partes, como se usa, texto da embalagem. O usuário corrige se precisar. O roteiro e o prompt **só
    podem citar o que está na ficha**, que é o que reduz a invenção.
-4. **Formato** — POV, só mãos, unboxing, antes/depois, provador, problema→solução… cada um com instrução de
+4. **Formato** (alterado a pedido do usuário em 11/11: os 6 do ShôStudio) — POV, Hands-on, Selfie frontal, Falando para a câmera, Provador, Formato livre (UGC); a narrativa (problema→solução, antes/depois, teste…) virou a abordagem de cada um dos 3 roteiros. Antes: POV, só mãos, unboxing, antes/depois, provador, problema→solução… cada um com instrução de
    câmera e ação.
 5. **Roteiro** — o modelo propõe **3 versões** com estrutura fixa: gancho (0–2 s, visual + frase), demonstração,
    prova/resultado visível, chamada para o produto marcado. O usuário escolhe uma e edita à vontade. As regras de

@@ -52,3 +52,4 @@ textarea:focus{outline:2px solid #96b78d}
 @media(max-width:700px){nav{flex-wrap:wrap}.nav-item{flex:1 1 40%}.nav-badge{margin-left:4px}.studio-head{flex-direction:column}.studio-head img{width:100%;height:180px}.studio-list,.studio-scripts{grid-template-columns:1fr}.studio-photos{grid-template-columns:repeat(3,1fr)}.studio-photos img{height:90px}#studio-editor .panel{padding:18px}}
 #studio-editor input,#studio-editor textarea{font-weight:400}.studio-script-head b{white-space:nowrap;flex:none;min-width:1.4em}.studio-script-head input{flex:1;min-width:0}
 .studio-photos figure button{background:#24352ecc;color:#fff;min-width:30px}.studio-script textarea{resize:vertical}
+.studio-format i{font-style:normal;font-size:10px;color:var(--green);font-weight:600;margin-top:4px}
