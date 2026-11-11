@@ -121,10 +121,10 @@ com regra determinística: o ganho não é remover padrão antigo, é aplicar pa
 | P2 | Polling de 5 s só redesenha cards e histórico quando a assinatura dos dados muda; foco do card é restaurado depois do render; `content-visibility: auto` + `contain-intrinsic-size` nos cards a partir do 7º | feito |
 | P3 | `view()` com `document.startViewTransition` (sem `prefers-reduced-motion: reduce`), foco no título da seção e `aria-current="page"` na aba | feito |
 | P4 | `<dialog>` com `aria-labelledby`, `closedby="any"` e `overscroll-behavior: contain` no diálogo e no `::backdrop` | feito |
-| P5 | Preferências: erro por campo (`:user-invalid`, `aria-invalid`, foco no primeiro inválido), `<fieldset>/<legend>` e custo em créditos no botão de confirmar envio | pendente |
-| P6 | Estúdio: `input[type=file]` com `display:none` é inalcançável por teclado (usar `.visually-hidden`); `role="tablist"` sem `aria-selected`/`role="tabpanel"`; fotos sem `width`/`height` | pendente |
-| P7 | Modo escuro: `<meta name="color-scheme">` + `color-scheme` no `:root` + `light-dark()`; exige tokenizar ~100 usos de cor (47 hex distintos) | pendente |
-| P8 | Servidor: `Cache-Control: no-store` em `/static` e nenhuma compressão (waitress não comprime); HTTPS local habilitaria `navigator.clipboard` — hoje produção é contexto inseguro e o "Copiar texto" sempre cai no `execCommand` | pendente |
+| P5 | Preferências: `novalidate` + validação por campo (preço, vendas, notas, categorias, URL do Flow, modelo, pesos 100), `aria-invalid`/`aria-describedby`, foco no primeiro problema, aviso fixo para recusa do servidor, `<fieldset>/<legend>` nos grupos e custo em créditos no botão de confirmar envio | feito |
+| P6 | Estúdio: input de arquivo visualmente escondido (mas focável, com anel no label), abas com `role="tab"`/`aria-selected`/`aria-controls` + setas/Home/End, fotos com `width`/`height`, botões de foto com 44 px de alvo; imagens da grade com `fetchpriority` na primeira fileira | feito |
+| P7 | Modo escuro: 57 tokens com `light-dark()` cobrindo os 106 usos de cor, `<meta name="color-scheme">`, paleta clara como fallback dentro de `@supports` (navegador antigo vê o de antes), contraste conferido por cálculo (branco/verde 8,8:1; painel verde 4,9–6,4:1) | feito |
+| P8 | Servidor: `/static` com `?v=<APP_VERSION>` em cache `immutable` e HTML/API em `no-store`; gzip nas respostas de texto (app.js 35.801 → 12.519 B, style.css 20.308 → 6.528 B, HTML 22 KB → 7,7 KB), `Vary: Accept-Encoding`, Range/206 e ETag tratados. HTTPS local (que habilitaria `navigator.clipboard`) segue pendente: é infra, precisa de Caddy na frente | feito (exceto HTTPS) |
 
 Medições antes/depois (banco fictício com 200 ofertas, Playwright, `127.0.0.1`):
 `refresh()` 52–56 ms com 5.800 nós reconstruídos a cada 5 s → **0 reconstruções** quando nada muda;

@@ -35,6 +35,11 @@ Painel pessoal para pesquisar, selecionar e acompanhar ofertas de afiliados Shop
 - O polling de 5 s só redesenha os cards e a tabela do histórico quando algo muda de fato: o foco e o `select` de triagem em uso sobrevivem à atualização. Cards abaixo das duas primeiras fileiras usam `content-visibility: auto` (com estimativa de altura) para não custar layout enquanto estão fora da tela.
 - Com um modal aberto o resto da página fica inerte: em vez de um toast atrás do diálogo, o retorno do "Copiar texto" aparece dentro dele (`role="status"` + texto do botão) e qualquer outro aviso espera o modal fechar.
 - O modal tem nome acessível (`aria-labelledby`), fecha com Esc, com o gesto de voltar do navegador (quando suportado) e com clique fora (`closedby="any"`); a página não rola atrás dele.
+- **Modo escuro:** a paleta são tokens com `light-dark()`; o painel segue o tema do sistema (`color-scheme: light dark` + `<meta name="color-scheme">`). Navegador sem `light-dark()` (anterior ao Chrome 123/Safari 17.5) recebe exatamente a paleta clara de antes.
+- **Erro de formulário no campo:** Preferências valida antes de enviar (preço máximo × mínimo, teto de vendas, notas, categorias, URL do Flow, modelo, pesos somando 100), marca o campo com `aria-invalid` + mensagem ligada por `aria-describedby` e leva o foco para o primeiro problema. Recusa do servidor aparece num aviso fixo acima de "Salvar preferências", não só no toast.
+- O botão de confirmar envio diz o gasto: **"Confirmar: 3 vídeos · 45 créditos"** (produtos × custo por vídeo).
+- **Estúdio:** abas com `role="tab"`/`aria-selected` e navegação por setas/Home/End; o seletor de fotos é alcançável por teclado (input visualmente escondido, não `display:none`); fotos declaram `width`/`height`.
+- **Entrega dos arquivos:** `/static` vai com `?v=<APP_VERSION>` e fica em cache longo (`immutable`); HTML e API seguem `no-store`. As respostas de texto saem com `gzip` (app.js de ~35 KB para ~12 KB) — o Waitress não comprime sozinho.
 
 ## Modos: Legacy e Moderno
 

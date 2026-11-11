@@ -1,4 +1,5 @@
 """Shopee Studio: local authenticated dashboard, served by Waitress."""
+import gzip
 import hmac
 import json
 import os
@@ -17,6 +18,47 @@ from llm import public_llm
 
 ROOT = Path(__file__).parent
 load_env(ROOT / ".env")
+
+# Texto que vale comprimir: o waitress não faz gzip sozinho e o painel serve ~65 KB de JS + CSS.
+COMPRESSIBLE = ("text/", "application/javascript", "application/json", "image/svg+xml")
+COMPRESS_MIN_BYTES = 700
+
+
+def app_version():
+    return os.environ.get("APP_VERSION", "local")
+
+
+def compress(response):
+    """gzip quando o cliente aceita e a resposta é texto; nunca em 304, 206 (Range) ou já comprimido."""
+    if not 200 <= response.status_code < 300 or response.status_code == 206:
+        return response
+    if response.headers.get("Content-Encoding") or response.headers.get("Content-Range"):
+        return response
+    if "gzip" not in request.headers.get("Accept-Encoding", "").lower():
+        return response
+    mimetype = (response.mimetype or "").lower()
+    if not any(mimetype.startswith(prefix) or mimetype.endswith(prefix) for prefix in COMPRESSIBLE):
+        return response
+    if response.direct_passthrough:
+        # Arquivo estático entregue como file wrapper pelo servidor WSGI: só nesses casos vale materializar
+        # os poucos KB para comprimir; em qualquer outra rota o streaming continua intocado.
+        if not request.path.startswith("/static/"):
+            return response
+        response.direct_passthrough = False
+    data = response.get_data()
+    if len(data) < COMPRESS_MIN_BYTES:
+        return response
+    compressed = gzip.compress(data, 6)
+    if len(compressed) >= len(data):
+        return response
+    response.set_data(compressed)
+    response.headers["Content-Encoding"] = "gzip"
+    vary = response.headers.get("Vary")
+    response.headers["Vary"] = f"{vary}, Accept-Encoding" if vary else "Accept-Encoding"
+    # O ETag do arquivo descreve os bytes originais; com gzip quem valida é o Vary + o cache por versão.
+    response.headers.pop("Etag", None)
+    return response
+
 
 
 def create_app(data_dir=None, testing=False):
@@ -87,11 +129,14 @@ def create_app(data_dir=None, testing=False):
 
     @app.after_request
     def headers(response):
-        response.headers["Cache-Control"] = "no-store"
+        # Só o arquivo estático pedido com a versão do app na URL pode ficar em cache longo: o HTML e a API
+        # carregam dado de produção e segredo, e a versão nova muda a URL (cache busting por APP_VERSION).
+        versioned_static = request.path.startswith("/static/") and bool(request.args.get("v"))
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned_static else "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.susercontent.com https://cf.shopee.com.br; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
-        return response
+        return compress(response)
 
     @app.errorhandler(ValueError)
     def invalid(error):
@@ -107,7 +152,7 @@ def create_app(data_dir=None, testing=False):
 
     @app.get("/")
     def home():
-        return render_template("index.html")
+        return render_template("index.html", version=app_version())
 
     @app.get("/healthz")
     def health():
@@ -168,7 +213,7 @@ def create_app(data_dir=None, testing=False):
                        shopee_app_id=store.shopee()["app_id"],
                        llm=public_llm(store.llm()), worker=store.worker_status(), video=engine.videos.summary(),
                        studio_waiting=engine.studio.waiting(),
-                       version=os.environ.get("APP_VERSION", "local"))
+                       version=app_version())
 
     @app.get("/api/runs/<int:run_id>")
     def get_run(run_id):

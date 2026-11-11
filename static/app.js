@@ -65,7 +65,7 @@ function renderOffers(){
  if(!products.length){$('#offers').innerHTML='<div class="empty"><div class="symbol">✧</div><h2>Seu próximo achado começa aqui.</h2><p>Configure o nicho e a faixa de preço em Preferências. Depois, consulte as ofertas para montar sua seleção.</p></div>';return;}
  $('#offers').innerHTML=products.slice(0,200).map((p,i)=>{
   const semVideo=(p.selected&&p.delivery!=='sent')?'<button class="mini-button bordered" data-no-video="'+esc(p.key)+'" title="Envia ao Telegram agora com a foto, a descrição e os links, sem vídeo">Enviar sem vídeo</button>':'';
-  return '<article class="offer-card"><div class="card-top"><span class="rank">'+String(i+1).padStart(2,'0')+'</span><span class="score">'+(p.selected?'SELECIONADO':'ALTERNATIVA')+' · '+p.score.toFixed(1)+'</span></div>'+(p.image?'<img class="thumb" src="'+esc(p.image)+'" alt="" loading="lazy" referrerpolicy="no-referrer">':'')+contentPills(p)+'<h3 title="'+esc(p.name)+'">'+esc(p.name)+'</h3><p class="shop">'+esc(p.shop)+'</p><div class="price-row"><strong>'+money(p.price)+'</strong><div class="commission"><small>COMISSÃO ESTIMADA</small><b>'+money(p.commission)+'</b></div></div><div class="offer-facts"><span>★ '+p.rating.toFixed(1)+'</span><span>'+p.sales.toLocaleString('pt-BR')+' vendas</span>'+(p.mode==='modern'?'<span>concorrência '+esc(p.competition)+'</span>'+(p.growth!=null?'<span>'+(p.growth>=0?'+':'')+Math.round(p.growth*100)+'%/sem.</span>':''):'')+'</div><div class="card-actions"><select aria-label="Status de '+esc(p.name)+'" data-key="'+esc(p.key)+'">'+['new','planned','published','discarded'].map(k=>'<option value="'+k+'" '+(p.decision===k?'selected':'')+'>'+labels[k]+'</option>').join('')+'</select><a href="'+esc(p.link)+'" target="_blank" rel="noopener noreferrer">Ver oferta ↗</a></div>'+semVideo+'<button class="mini-button" data-product="'+esc(p.key)+'">Por que entrou? · Ver evolução</button>'+videoRow(p)+'</article>';}).join('');
+  return '<article class="offer-card"><div class="card-top"><span class="rank">'+String(i+1).padStart(2,'0')+'</span><span class="score">'+(p.selected?'SELECIONADO':'ALTERNATIVA')+' · '+p.score.toFixed(1)+'</span></div>'+(p.image?'<img class="thumb" src="'+esc(p.image)+'" alt="" '+(i<3?'fetchpriority="high"':'loading="lazy"')+' decoding="async" referrerpolicy="no-referrer">':'')+contentPills(p)+'<h3 title="'+esc(p.name)+'">'+esc(p.name)+'</h3><p class="shop">'+esc(p.shop)+'</p><div class="price-row"><strong>'+money(p.price)+'</strong><div class="commission"><small>COMISSÃO ESTIMADA</small><b>'+money(p.commission)+'</b></div></div><div class="offer-facts"><span>★ '+p.rating.toFixed(1)+'</span><span>'+p.sales.toLocaleString('pt-BR')+' vendas</span>'+(p.mode==='modern'?'<span>concorrência '+esc(p.competition)+'</span>'+(p.growth!=null?'<span>'+(p.growth>=0?'+':'')+Math.round(p.growth*100)+'%/sem.</span>':''):'')+'</div><div class="card-actions"><select aria-label="Status de '+esc(p.name)+'" data-key="'+esc(p.key)+'">'+['new','planned','published','discarded'].map(k=>'<option value="'+k+'" '+(p.decision===k?'selected':'')+'>'+labels[k]+'</option>').join('')+'</select><a href="'+esc(p.link)+'" target="_blank" rel="noopener noreferrer">Ver oferta ↗</a></div>'+semVideo+'<button class="mini-button" data-product="'+esc(p.key)+'">Por que entrou? · Ver evolução</button>'+videoRow(p)+'</article>';}).join('');
  document.querySelectorAll('[data-key]').forEach(el=>el.onchange=async()=>{try{await post('/decisions',{key:el.dataset.key,state:el.value});activeRun=await api('/runs/'+activeRun.id);await refresh();toast('Triagem atualizada.');}catch(e){toast(e.message);}});
  document.querySelectorAll('[data-no-video]').forEach(el=>el.onclick=async()=>{try{const p=products.find(x=>x.key===el.dataset.noVideo);
   const d=await api('/runs/'+activeRun.id+'/products/'+encodeURIComponent(p.key)+'/no-video');noVideoKey=p.key;
@@ -80,9 +80,74 @@ function renderOffers(){
 function offersSignature(){return JSON.stringify([activeRun&&activeRun.id,activeRun&&activeRun.status,activeRun&&activeRun.error,activeRun&&activeRun.warning,allOffers,(activeRun&&activeRun.products||[]).map(p=>[p.key,p.selected,p.score,p.price,p.decision,p.delivery,p.video&&p.video.state,p.video&&p.video.id])]);}
 $('#show-all').onclick=()=>{allOffers=!allOffers;renderOffers();};
 $('#collect').onclick=async()=>{try{await post('/run-now');activeRun=null;toast('Consulta iniciada. Nenhuma mensagem será enviada por esta ação.');await refresh();}catch(e){toast(e.message);}};
-$('#settings-form').onsubmit=async e=>{e.preventDefault();const r={};for(const[k,v]of Object.entries(state.settings)){const i=e.target.elements.namedItem(k);if(!i)continue;r[k]=typeof v==='boolean'?i.checked:typeof v==='number'?Number(i.value):i.value.trim();}try{await post('/settings',r);await refresh(true);toast('Preferências salvas.');}catch(error){toast(error.message);}};
+function clearFieldErrors(form){
+ form.querySelectorAll('.field-error').forEach(note=>note.remove());
+ form.querySelectorAll('[aria-invalid="true"]').forEach(el=>{el.removeAttribute('aria-invalid');
+  const before=el.dataset.describedbyBefore;if(before!==undefined){if(before)el.setAttribute('aria-describedby',before);else el.removeAttribute('aria-describedby');delete el.dataset.describedbyBefore;}});
+}
+/* O erro fica colado no campo (o toast passa longe de quem está no fim do formulário) e o campo recebe
+   aria-invalid + aria-describedby, então quem usa leitor de tela ouve o mesmo que está escrito. */
+function showFieldError(input,message){
+ const name=input.name||input.id;if(!name)return;
+ const errorId='erro-'+name;let note=document.getElementById(errorId);
+ if(!note){note=document.createElement('span');note.id=errorId;note.className='field-error';
+  const host=input.closest('label')||input.parentElement;host.appendChild(note);}
+ note.textContent=message;
+ input.setAttribute('aria-invalid','true');
+ const described=(input.getAttribute('aria-describedby')||'').split(' ').filter(Boolean);
+ if(!described.includes(errorId)){if(input.dataset.describedbyBefore===undefined)input.dataset.describedbyBefore=input.getAttribute('aria-describedby')||'';input.setAttribute('aria-describedby',[...described,errorId].join(' '));}
+}
+function settingsProblems(form,values){
+ const problems=[],visible=el=>el.offsetParent!==null,num=name=>{const el=form.elements.namedItem(name);return el?Number(el.value):NaN;};
+ form.querySelectorAll('input[name],select[name],textarea[name]').forEach(el=>{
+  if(el.type==='checkbox'||el.type==='radio'||!visible(el))return;
+  if(el.type==='number'&&el.value.trim()===''&&(el.min===''||Number(el.min)>=1)){problems.push([el,'Preencha este campo.']);return;}
+  if(el.checkValidity())return;
+  let message='Revise este valor.';
+  if(el.validity.valueMissing)message='Preencha este campo.';
+  else if(el.validity.badInput)message='Informe um número.';
+  else if(el.validity.rangeUnderflow)message='O mínimo é '+el.min+'.';
+  else if(el.validity.rangeOverflow)message='O máximo é '+el.max+'.';
+  else if(el.validity.stepMismatch)message='Use passos de '+el.step+'.';
+  problems.push([el,message]);
+ });
+ const check=(name,condition,message)=>{if(!condition)return;const el=form.elements.namedItem(name);if(el&&visible(el))problems.push([el,message]);};
+ const modern=values.mode==='modern';
+ check('modern_max_price',modern&&values.modern_max_price&&values.modern_max_price<values.modern_min_price,'O preço máximo precisa ser maior que o mínimo.');
+ check('modern_max_sales',modern&&values.modern_max_sales&&values.modern_max_sales<values.modern_min_sales,'O teto de vendas precisa ser maior que o mínimo.');
+ check('max_price',!modern&&values.max_price&&values.max_price<values.min_price,'O preço máximo precisa ser maior que o mínimo.');
+ check('fallback_rating',!modern&&values.relax_rating&&values.fallback_rating>values.min_rating,'A nota alternativa não pode superar a nota mínima.');
+ const weights=(values.commission_weight||0)+(values.rating_weight||0)+(values.sales_weight||0);
+ check('sales_weight',!modern&&weights!==100,'Os pesos somam '+weights+'%. Ajuste para 100%.');
+ const categories=(values.modern_categories||'').trim();
+ check('modern_categories',modern&&(categories&&(!/^\d{4,9}(\s*,\s*\d{4,9})*$/.test(categories)||categories.split(',').length>20)),'Use até 20 IDs numéricos separados por vírgula (ex.: 100715,100719).');
+ check('flow_project_url',Boolean(values.flow_project_url)&&!/^https:\/\/(flow\.google\.com|labs\.google)\/\S{3,280}$/.test(values.flow_project_url),'Use um link https://flow.google.com/project/...');
+ const model=(values.video_model||'').trim();
+ check('video_model',!model||model.length>60,'Informe o nome do modelo mostrado no Flow (até 60 caracteres).');
+ check('keyword',(values.keyword||'').length>120,'Máximo de 120 caracteres.');
+ check('modern_name_filter',(values.modern_name_filter||'').length>200,'Máximo de 200 caracteres.');
+ return problems;
+}
+$('#settings-form').addEventListener('input',e=>{$('#settings-error').hidden=true;const note=e.target.name&&document.getElementById('erro-'+e.target.name);if(note&&e.target.checkValidity()){clearTimeout(e.target.errorTimer);e.target.errorTimer=setTimeout(()=>{note.remove();e.target.removeAttribute('aria-invalid');},1200);}});
+$('#settings-form').onsubmit=async e=>{
+ e.preventDefault();
+ const form=e.target,banner=$('#settings-error');
+ clearFieldErrors(form);banner.hidden=true;banner.textContent='';
+ const r={};for(const[k,v]of Object.entries(state.settings)){const i=form.elements.namedItem(k);if(!i)continue;r[k]=typeof v==='boolean'?i.checked:typeof v==='number'?Number(i.value):i.value.trim();}
+ const problems=settingsProblems(form,r);
+ if(problems.length){
+  problems.forEach(([el,message])=>showFieldError(el,message));
+  const first=problems[0][0];first.focus({preventScroll:true});first.scrollIntoView({block:'center',behavior:'smooth'});
+  toast(problems.length===1?'Confira o campo destacado.':'Confira os '+problems.length+' campos destacados.');
+  return;
+ }
+ try{await post('/settings',r);await refresh(true);toast('Preferências salvas.');}
+ catch(error){banner.textContent=error.message;banner.hidden=false;banner.scrollIntoView({block:'center',behavior:'smooth'});}
+};
 $('#telegram-form').onsubmit=async e=>{e.preventDefault();const r={chat_id:$('#telegram-chat').value.trim(),thread_id:$('#telegram-topic').value.trim(),token:$('#telegram-token').value.trim()};try{await post('/telegram',r);$('#telegram-token').value='';await refresh(true);toast('Telegram salvo. Nenhuma mensagem foi enviada.');}catch(error){toast(error.message);}};
-$('#preview').onclick=async()=>{try{sendingRun=activeRun.id;const p=await api('/runs/'+sendingRun+'/preview');$('#modal-title').textContent='Confira antes de enviar';$('#modal-destination').textContent='Destino: '+(p.destination.chat_id||'não configurado')+(p.destination.thread_id?' · tópico '+p.destination.thread_id:'');$('#modal-content').textContent=p.text;$('#confirm-send').hidden=false;$('#copy-modal').hidden=true;$('#confirm-photo').hidden=true;$('#confirm-send').disabled=!p.can_send||!p.destination.configured;$('#modal').showModal();}catch(e){toast(e.message);}};
+$('#preview').onclick=async()=>{try{sendingRun=activeRun.id;const p=await api('/runs/'+sendingRun+'/preview');$('#modal-title').textContent='Confira antes de enviar';$('#modal-destination').textContent='Destino: '+(p.destination.chat_id||'não configurado')+(p.destination.thread_id?' · tópico '+p.destination.thread_id:'');$('#modal-content').textContent=p.text;const count=(p.messages||[]).length,cost=Number(state.settings.video_cost)||0;
+ $('#confirm-send').textContent=count?('Confirmar: '+(count===1?'1 vídeo':count+' vídeos')+' · '+count*cost+' créditos'):'Confirmar envio';
+ $('#confirm-send').hidden=false;$('#copy-modal').hidden=true;$('#confirm-photo').hidden=true;$('#confirm-send').disabled=!p.can_send||!p.destination.configured;$('#modal').showModal();}catch(e){toast(e.message);}};
 $('#confirm-send').onclick=async()=>{$('#confirm-send').disabled=true;try{const r=await post('/runs/'+sendingRun+'/send');$('#modal').close();toast(r.queued+' vídeo(s) na fila. Cada produto chega ao Telegram numa única mensagem quando o vídeo ficar pronto.');activeRun=await api('/runs/'+sendingRun);await refresh();}catch(e){toast(e.message);await refresh();}};
 $('#close-modal').onclick=()=>$('#modal').close();
 refresh(true).catch(()=>{});
