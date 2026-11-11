@@ -83,6 +83,40 @@ Regras de segurança:
 - Sem vídeo, nada é entregue: teto atingido, geração desligada, anúncio sem imagem ou falha de geração deixam o produto "não entregue", com o motivo no card, sem foto nem texto substituto. O botão "Gerar vídeo ↻" tenta de novo dentro do teto, com a mesma mensagem congelada. "Reenviar vídeo" manda de novo um vídeo pronto que o Telegram recusou, sem gastar créditos. Worker offline: o produto fica "aguardando vídeo" por até 6 horas.
 - Vídeos criados antes desta versão (com a foto já enviada) continuam respondendo à mensagem da foto.
 
+## Estúdio (geração assistida)
+
+Plano e decisões em [`PLANO_ESTUDIO.md`](PLANO_ESTUDIO.md). Menu **Estúdio**, pensado para o celular, em duas abas:
+
+- **Do dia:** com Preferências → Vídeo → **Produtos para o Estúdio por envio** maior que 0 (padrão 0, desligado), os
+  N produtos de maior pontuação de cada envio não entram na fila automática: ficam reservados, "aguardando vídeo", e o
+  card mostra "Estúdio até …". Se até o **horário de corte** (padrão 22:00, horário de Brasília) não houver **nenhuma**
+  geração para o produto, ele segue para o vídeo automático de sempre (foto da API, roteiro da consulta, dentro do teto
+  diário); rascunho aberto não impede. Envio feito depois do corte reserva até o corte do dia seguinte. A descrição e os
+  links continuam congelados no envio.
+- **Manual:** cole o link de qualquer anúncio (completo ou curto `s.shopee.com.br`; o link curto é resolvido só pelo
+  redirecionamento, sem abrir a página nem passar por captcha). O painel busca o anúncio na Open API
+  (`productOfferV2(itemId, shopId)`); produto fora do programa de afiliados é recusado. Avisos sem bloquear: já entregue
+  ou reservado antes, no top de afiliados do dia, sem foto. Vídeos manuais ficam fora do teto diário (etapa S2).
+
+Em cada rascunho:
+1. **Fotos:** a foto do anúncio mais até 6 fotos suas, reduzidas no navegador (lado maior 1.280 px, JPEG) antes de
+   subir; ★ marca a principal. Ficam só no volume (`/data/studio/<id>`) e são apagadas com o rascunho.
+2. **Ficha visual:** o modelo descreve só o que aparece nas fotos (P = anúncio, F1… = suas fotos) e o que o vídeo por
+   IA tende a errar. Você corrige; roteiro e prompt só podem usar o que está nela.
+3. **Formato** (como a câmera filma e quem aparece): **POV** e **Hands-on** (só mãos, voz em off), **Selfie frontal**,
+   **Falando para a câmera** e **Formato livre (UGC)** (pessoa falando para a câmera, boca sincronizada) e **Provador**
+   (pessoa usando o produto, voz em off). Nos formatos com pessoa a regra de só mãos não vale e o roteiro descreve a
+   pessoa no gancho para ela se manter igual. O modo automático continua com os 7 formatos dele.
+4. **Roteiros:** 3 abordagens diferentes no formato escolhido (o modelo escolhe entre problema e solução, antes e
+   depois, teste, uso na rotina, detalhes, unboxing e curiosidade), cada um com gancho (0–2 s), demonstração, prova e chamada, e a legenda. Valem as
+   regras do Modo Moderno (18–25 palavras, termina em "produto marcado", sem "Olha"/"Gente" nem abertura repetida,
+   nenhum número fora do nome) e as 3 narrações começam diferente. Edição livre: o card mostra o que fugiu das regras
+   sem bloquear. Ao escolher um, aparece o prompt do Flow.
+
+Chamadas ao modelo rodam em segundo plano (a página acompanha); reiniciar o painel no meio marca a chamada como falha
+e mantém o rascunho. **Nesta versão (S1) o Estúdio não gera vídeo nem gasta créditos**: a geração no Flow com várias
+referências, aprovação de custo e prévia antes do Telegram é a etapa S2.
+
 ## Unraid / Compose Manager
 
 1. Crie uma stack chamada shopee-studio com o conteúdo de compose.yaml deste repositório.

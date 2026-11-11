@@ -68,6 +68,9 @@ def create_app(data_dir=None, testing=False):
             return None
         if not password_hash and not testing:
             return jsonify(error="Defina PANEL_PASSWORD no .env e reinicie o serviço."), 503
+        if request.method == "POST" and re.fullmatch(r"/api/studio/\d+/photos", request.path):
+            # Studio photos from the phone: one JPEG reduced in the browser, in base64 (still JSON + CSRF).
+            request.max_content_length = 4 * 1024 * 1024
         if request.method != "GET":
             # JSON-only mutation plus same-origin check prevents cross-origin form posts.
             if not request.is_json:
@@ -164,6 +167,7 @@ def create_app(data_dir=None, testing=False):
                        shopee_configured=bool(store.shopee()["app_id"] and store.shopee()["secret"]),
                        shopee_app_id=store.shopee()["app_id"],
                        llm=public_llm(store.llm()), worker=store.worker_status(), video=engine.videos.summary(),
+                       studio_waiting=engine.studio.waiting(),
                        version=os.environ.get("APP_VERSION", "local"))
 
     @app.get("/api/runs/<int:run_id>")
@@ -354,6 +358,79 @@ def create_app(data_dir=None, testing=False):
     def video_resume():
         engine.videos.resume()
         return jsonify(engine.videos.summary())
+
+    # ---------- Estúdio (PLANO_ESTUDIO.md) ----------
+    studio = engine.studio
+
+    def body():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("Requisição inválida.")
+        return payload
+
+    @app.get("/api/studio")
+    def studio_overview():
+        return jsonify(studio.overview())
+
+    @app.post("/api/studio/day")
+    def studio_day():
+        payload = body()
+        if not isinstance(payload.get("run_id"), int) or not isinstance(payload.get("key"), str):
+            raise ValueError("Informe a consulta e o produto.")
+        return jsonify(studio.open_day(payload["run_id"], payload["key"]))
+
+    @app.post("/api/studio/manual")
+    def studio_manual():
+        return jsonify(studio.create_manual(body().get("url")))
+
+    @app.get("/api/studio/<int:session_id>")
+    def studio_get(session_id):
+        return jsonify(studio.get(session_id))
+
+    @app.post("/api/studio/<int:session_id>/delete")
+    def studio_delete(session_id):
+        studio.delete(session_id)
+        return jsonify(ok=True)
+
+    @app.post("/api/studio/<int:session_id>/photos")
+    def studio_photo_add(session_id):
+        return jsonify(studio.add_photo(session_id, body().get("data")))
+
+    @app.get("/api/studio/<int:session_id>/photos/<photo_id>")
+    def studio_photo(session_id, photo_id):
+        from flask import send_file
+        path, kind = studio.photo_file(session_id, photo_id)
+        return send_file(path, mimetype=kind)
+
+    @app.post("/api/studio/<int:session_id>/photos/<photo_id>/<action>")
+    def studio_photo_update(session_id, photo_id, action):
+        return jsonify(studio.update_photo(session_id, photo_id, action))
+
+    @app.post("/api/studio/<int:session_id>/facts")
+    def studio_facts(session_id):
+        payload = body()
+        if "text" in payload:
+            return jsonify(studio.save_facts(session_id, payload["text"]))
+        return jsonify(studio.start(session_id, "facts")), 202
+
+    @app.post("/api/studio/<int:session_id>/format")
+    def studio_format(session_id):
+        return jsonify(studio.set_format(session_id, body().get("format")))
+
+    @app.post("/api/studio/<int:session_id>/scripts")
+    def studio_scripts(session_id):
+        body()
+        return jsonify(studio.start(session_id, "scripts")), 202
+
+    @app.post("/api/studio/<int:session_id>/scripts/<int:index>")
+    def studio_script(session_id, index):
+        payload = body()
+        return jsonify(studio.update_script(session_id, index, payload.get("script"), payload.get("choose") is True))
+
+    @app.post("/api/studio/<int:session_id>/caption")
+    def studio_caption(session_id):
+        payload = body()
+        return jsonify(studio.save_caption(session_id, payload.get("description"), payload.get("hashtags")))
 
     if not testing:
         engine.start()

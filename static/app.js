@@ -12,7 +12,7 @@ async function api(path,options={}){
  return result;
 }
 const post=(path,value={})=>api(path,{method:'POST',body:JSON.stringify(value)});
-function view(name){document.querySelectorAll('.view').forEach(e=>e.hidden=e.id!==name);document.querySelectorAll('[data-view]').forEach(e=>e.classList.toggle('active',e.dataset.view===name));$('#page-title').textContent={overview:'Seu próximo Top 5.',history:'Um radar com memória.',settings:'Do seu jeito.'}[name];$('#page-subtitle').textContent={overview:'Menos ruído. Mais espaço para escolher o que vale divulgar.',history:'Veja o que mudou, o que foi enviado e o que merece outra olhada.',settings:'Ajuste a seleção, sua rotina e o destino das ofertas.'}[name];}
+function view(name){document.querySelectorAll('.view').forEach(e=>e.hidden=e.id!==name);document.querySelectorAll('[data-view]').forEach(e=>e.classList.toggle('active',e.dataset.view===name));$('#page-title').textContent={overview:'Seu próximo Top 5.',studio:'Estúdio.',history:'Um radar com memória.',settings:'Do seu jeito.'}[name];$('#page-subtitle').textContent={overview:'Menos ruído. Mais espaço para escolher o que vale divulgar.',studio:'Suas fotos, um roteiro forte e você decidindo cada vídeo.',history:'Veja o que mudou, o que foi enviado e o que merece outra olhada.',settings:'Ajuste a seleção, sua rotina e o destino das ofertas.'}[name];}
 document.querySelectorAll('[data-view]').forEach(e=>e.onclick=()=>view(e.dataset.view));
 $('#login-form').onsubmit=async e=>{e.preventDefault();$('#login-error').textContent='';try{const r=await post('/login',{password:$('#password').value});csrf=r.csrf;$('#password').value='';await refresh(true);}catch(error){$('#login-error').textContent=error.message;}};
 $('#logout').onclick=async()=>{try{await post('/logout');$('#app').hidden=true;$('#login').hidden=false;}catch(e){toast(e.message);}};
@@ -23,7 +23,7 @@ async function refresh(fillForms=false){
  $('#last-run').textContent=state.busy?'Consultando…':last?labels[last.status]:'Nenhuma';
  $('#last-run-detail').textContent=last?(last.progress?last.progress:date(last.started)+' · '+last.scanned+' ofertas consultadas'):'Seu radar está pronto para começar';
  $('#last-send').textContent=sent?date(sent.sent_at):'Ainda não enviado';$('#planned').innerHTML=(state.counts.planned||0)+' <em>produtos</em>';
- $('#version').textContent='Versão '+state.version.slice(0,12);$('#collect').disabled=state.busy;$('#collect').textContent=state.busy?'↻ Consultando…':'↻ Consultar agora';
+ $('#version').textContent='Versão '+state.version.slice(0,12);$('#studio-badge').textContent=state.studio_waiting||'';$('#studio-badge').hidden=!state.studio_waiting;$('#collect').disabled=state.busy;$('#collect').textContent=state.busy?'↻ Consultando…':'↻ Consultar agora';
  const warnings=[];
  if(!state.shopee_configured)warnings.push('Configure as credenciais da Shopee em Preferências para consultar ofertas.');
  if(state.settings.auto_send&&!state.telegram.configured)warnings.push('O envio automático está ligado, mas o Telegram ainda não está configurado.');
@@ -115,7 +115,8 @@ const badVideo=['failed','unknown','delivery_failed','delivery_unknown','skipped
 const deliveryLabels={pending:'aguardando vídeo',sending:'enviando ao Telegram',sent:'entregue',unknown:'entrega não confirmada',failed:'não entregue',blocked:'bloqueado',refused:'Telegram recusou'};
 function videoRow(p){if(!p.selected||!p.delivery&&!p.video)return '';const v=p.video,d=p.delivery,single=p.delivery_mode==='video';
  const canCreate=single?d==='failed'&&(!v||['failed','skipped'].includes(v.state)):d==='sent'&&(!v||['failed','skipped'].includes(v.state));
- const pills=(single&&d?'<span class="content-pill video'+(['failed','blocked','refused','unknown'].includes(d)?' bad':'')+'">Telegram: '+esc(deliveryLabels[d]||d)+'</span>':'')+(v?'<span class="content-pill video'+(badVideo.includes(v.state)?' bad':'')+'">vídeo: '+esc(v.label)+'</span>':(d==='sent'&&!single?'<span class="content-pill video">sem vídeo</span>':''))+fidelityPill(v);
+ const studio=p.studio_deadline&&!v?'<span class="content-pill studio">Estúdio até '+date(p.studio_deadline)+'</span><button class="mini-button" data-studio-card="'+esc(p.key)+'">Abrir no Estúdio ✦</button>':'';
+ const pills=studio+(single&&d?'<span class="content-pill video'+(['failed','blocked','refused','unknown'].includes(d)?' bad':'')+'">Telegram: '+esc(deliveryLabels[d]||d)+'</span>':'')+(v?'<span class="content-pill video'+(badVideo.includes(v.state)?' bad':'')+'">vídeo: '+esc(v.label)+'</span>':(d==='sent'&&!single?'<span class="content-pill video">sem vídeo</span>':''))+fidelityPill(v);
  const note=single&&p.delivery_error?'<p class="delivery-note">'+esc(p.delivery_error)+'</p>':(!single&&v&&v.error?'<p class="delivery-note">'+esc(v.error)+'</p>':'');
  const actions=(canCreate?'<button class="mini-button" data-video-create="'+esc(p.key)+'" title="Gera o vídeo no Flow de novo, respeitando o teto diário de créditos">Gerar vídeo ↻</button>':'')+(v&&v.state==='delivery_failed'?'<button class="mini-button" data-video-resend="'+v.id+'" title="Envia de novo o vídeo já gerado, sem gastar créditos">Reenviar vídeo</button>':'');
  return pills||actions||note?'<div class="video-row">'+pills+actions+'</div>'+note:'';}
