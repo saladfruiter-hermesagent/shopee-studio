@@ -133,11 +133,18 @@ referências, aprovação de custo e prévia antes do Telegram é a etapa S2.
 
 1. Crie uma stack chamada shopee-studio com o conteúdo de compose.yaml deste repositório.
 2. Coloque um .env junto ao Compose, baseado em .env.example. Defina PANEL_PASSWORD. As credenciais da Shopee e do Telegram podem ser preenchidas depois pela interface.
-3. Execute Compose Up. Acesse http://IP-DO-UNRAID:8787 e use a senha PANEL_PASSWORD.
+3. Execute Compose Up. Acesse http://IP-DO-UNRAID:8787 e use a senha PANEL_PASSWORD. Na instalação do thevault o endereço usado é **`https://shopee.home.local`**: o container `Caddy2` faz `reverse_proxy 192.168.1.90:8787` com TLS pela CA interna dele (o registro A fica no Pi-hole). Para publicar em outro host, siga a nomenclatura `<serviço>.home.local` do Caddyfile existente.
 4. Em Preferências, confira filtros, configure Telegram e o tópico. Faça uma consulta e revise a prévia. Anúncios já enviados pelo aplicativo ficam excluídos permanentemente.
 5. Habilite envio automático quando o destino e o ranking estiverem corretos. Por padrão, só gera prévias.
 
 A porta 8787 deve estar livre. PANEL_PORT altera a porta externa. Use BIND_IP para restringir à interface LAN desejada. Com proxy HTTPS, use COOKIE_SECURE=true e acesse apenas o endereço HTTPS. Não exponha diretamente a porta na internet.
+
+### HTTPS na LAN (Caddy)
+
+Atrás do Caddy o painel funciona sem ajuste no código: o proxy preserva o `Host`, então a checagem de `Origin` do painel (que recusa origem diferente do host) continua válida, e o HTTPS torna a página um contexto seguro — é o que habilita `navigator.clipboard` no botão "Copiar texto" (sem TLS ele cai para `document.execCommand`, que é o caminho usado em `http://IP:8787`).
+
+- `COOKIE_SECURE=true` deixa o cookie de sessão com `Secure`: endurece a sessão e **impede o login pelo endereço HTTP direto**. Hoje o container roda com o padrão (`false`), então os dois endereços funcionam; ligar só faz sentido depois de fechar a porta 8787 e usar exclusivamente o HTTPS.
+- Trocar a imagem não exige `Ctrl+F5`: os arquivos são servidos com `?v=<APP_VERSION>` e cache `immutable`, então a versão nova muda a URL sozinha.
 
 O volume shopee-studio_shopee-data guarda banco e chave de sessão. Faça backup desse volume com o container parado. Ele também contém os segredos da Shopee e do Telegram configurados na interface; trate o backup como confidencial. Não use docker compose down -v ao atualizar.
 
