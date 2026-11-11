@@ -234,9 +234,10 @@ def spoken_numbers(text):
     return found
 
 
-def modern_script_problems(script, name, banned_openings=()):
+def modern_script_problems(script, name, banned_openings=(), hands_only=True):
     """Modern mode rules on top of script_problems: hands only, closing on the tagged product, varied openings
-    and no number that is not in the listing name."""
+    and no number that is not in the listing name. `hands_only=False` (Estúdio, formats with a person) keeps
+    every rule except the face check."""
     problems = []
     narration = script.get("narration") if isinstance(script.get("narration"), str) else ""
     count = len(narration.split())
@@ -255,7 +256,7 @@ def modern_script_problems(script, name, banned_openings=()):
     if invented:
         problems.append("número falado que não está no nome do anúncio: " + ", ".join(invented))
     for field in ("hook", "demo", "benefit", "cta"):
-        if isinstance(script.get(field), str) and FACE.search(_folded(script[field])):
+        if hands_only and isinstance(script.get(field), str) and FACE.search(_folded(script[field])):
             problems.append(f"{field}: só mãos em cena, sem rosto nem sorriso")
     return problems
 

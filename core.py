@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 import analysis
 import modern
+import studio as studio_module
 import video as video_module
 from content import CaptionTooLong, opening, pick_format, plain, video_caption
 from llm import LLM_DEFAULTS, ModelError, Runner, WORKER_ONLINE_SECONDS, public_llm, validate_llm
@@ -40,7 +41,10 @@ DEFAULTS = dict(keyword="", min_rating=4.5, relax_rating=False,
                 modern_min_sales=50, modern_max_sales=5000, modern_min_discount=0,
                 modern_showcase_cut=30, modern_exclude_top=True, modern_top_pages=20,
                 modern_type_days=7, modern_video_potential=False, modern_fidelity_min=6,
-                sales_snapshot=True, snapshot_time="07:00")
+                sales_snapshot=True, snapshot_time="07:00",
+                # Estúdio (PLANO_ESTUDIO.md): the best N products of each send wait for the user; without any
+                # generation by the cutoff they fall back to the automatic video. 0 = off (behaviour unchanged).
+                studio_slots=0, studio_cutoff="22:00")
 MODES = {"legacy", "modern"}
 DECISIONS = {"new", "planned", "published", "discarded"}
 API = "https://open-api.affiliate.shopee.com.br/graphql"
@@ -107,7 +111,7 @@ def validate_settings(payload, existing=None):
         raise ValueError("URL do projeto do Flow inválida (https://flow.google.com/project/...).")
     if len(result["keyword"]) > 120:
         raise ValueError("Palavra-chave: máximo de 120 caracteres.")
-    for key in ("schedule_time", "snapshot_time"):
+    for key in ("schedule_time", "snapshot_time", "studio_cutoff"):
         try:
             datetime.strptime(result[key], "%H:%M")
         except ValueError:
@@ -143,7 +147,7 @@ def validate_settings(payload, existing=None):
     if result["max_price"] and result["max_price"] < result["min_price"]:
         raise ValueError("Preço máximo menor que o mínimo.")
     for key, low, high in (("repeat_days", 0, 365), ("top_count", 1, 10),
-                           ("per_shop", 1, 10),
+                           ("per_shop", 1, 10), ("studio_slots", 0, 10),
                            ("max_pages", 1, 500), ("page_limit", 1, 50),
                            ("video_daily_credits", 0, 2000), ("video_cost", 1, 500)):
         if not low <= result[key] <= high:
@@ -199,6 +203,11 @@ class Store:
                     text_message_id INTEGER, sent_at TEXT, error TEXT, PRIMARY KEY(run_id, product_key));
                 CREATE TABLE IF NOT EXISTS sales_history (
                     item_id TEXT, day TEXT, sales INTEGER, PRIMARY KEY(item_id, day));
+                CREATE TABLE IF NOT EXISTS studio (
+                    id INTEGER PRIMARY KEY, origin TEXT, run_id INTEGER, product_key TEXT, product TEXT,
+                    photos TEXT, facts TEXT, format TEXT, scripts TEXT, chosen INTEGER, job TEXT,
+                    created TEXT, updated TEXT);
+                CREATE INDEX IF NOT EXISTS studio_run ON studio(run_id, product_key);
             """)
             # Additive migrations only: old rows keep their data and stay readable.
             for table, column, kind in (("runs", "progress", "TEXT"), ("videos", "snapshot", "TEXT"),
@@ -228,6 +237,9 @@ class Store:
             # Nobody waits for model tasks created before a restart; video jobs live on their own.
             db.execute("UPDATE tasks SET status='expired' WHERE kind='llm' AND status IN ('queued','claimed')")
             db.execute("UPDATE videos SET state='delivery_unknown',error='Painel reiniciou durante o envio; confira o Telegram.' WHERE state='sending'")
+            # A Studio model call that was running died with the process; the draft itself is kept.
+            db.execute("""UPDATE studio SET job=json_set(job,'$.status','failed','$.message','Painel reiniciou durante a chamada ao modelo; tente de novo.')
+                          WHERE json_extract(job,'$.status')='running'""")
             queued = [r[0] for r in db.execute("SELECT id FROM runs WHERE delivery='queued'")]
         for run_id in queued:
             self.refresh_delivery(run_id)
@@ -290,6 +302,9 @@ class Store:
             product["delivery_error"] = entry.get("error") or None
             # "video": one message with the subtitled video; "legacy": photo + prompt, video as a reply.
             product["delivery_mode"] = ("video" if entry.get("snapshot") else "legacy") if entry else None
+            snapshot = json.loads(entry["snapshot"]) if entry.get("snapshot") else {}
+            # Estúdio: reserved for the user until this time (ISO); afterwards the automatic video takes over.
+            product["studio_deadline"] = snapshot.get("studio_deadline") if snapshot.get("studio") else None
         return result
 
     def decision(self, key, state):
@@ -591,6 +606,21 @@ def modern_query(page, limit=50, list_type=0, sort_type: int | None = 2, categor
 MODERN_FIELDS = ("itemId shopId productName shopName offerLink productLink imageUrl price priceMin priceMax "
                  "commission commissionRate sellerCommissionRate appExistRate appNewRate ratingStar sales "
                  "priceDiscountRate productCatIds periodStartTime periodEndTime")
+
+
+def offer_query(item_id, shop_id=None):
+    """One listing by its IDs (Estúdio, aba Manual). An ID outside the affiliate program returns no nodes."""
+    args = [f"itemId: {int(item_id)}"] + ([f"shopId: {int(shop_id)}"] if shop_id else []) + ["page: 1", "limit: 5"]
+    return """query { productOfferV2(%s) {
+      nodes { %s }
+      pageInfo { page hasNextPage }
+    } }""" % (", ".join(args), MODERN_FIELDS)
+
+
+def fetch_offer_by_id(credentials, item_id, shop_id=None, page_fetcher=None):
+    credentials = _credentials(credentials)
+    data = (page_fetcher or fetch_product_page)(None, 1, credentials, query=offer_query(item_id, shop_id))
+    return next((n for n in data["nodes"] if str(n.get("itemId")) == str(item_id)), None)
 
 
 def request_json(url, body, headers=None, timeout=25):
@@ -908,6 +938,9 @@ class Engine:
         self.heartbeat = time.time()
         self.stop = threading.Event()
         self.videos = video_module.Videos(self, TZ)
+        # Estúdio: one listing by its IDs (aba Manual) and the assisted video drafts.
+        self.offer_fetcher = lambda item_id, shop_id=None: fetch_offer_by_id(store.shopee(), item_id, shop_id)
+        self.studio = studio_module.Studio(self, TZ)
 
     def collect(self, source="manual"):
         if not self.lock.acquire(blocking=False):
@@ -1258,11 +1291,17 @@ class Engine:
                 if changed != 1:
                     raise ValueError("Envio já iniciado.")
             queued = 0
+            # Estúdio: the best-scored products wait for the user instead of the automatic video (E1/E10).
+            slots = self.store.settings()["studio_slots"]
+            reserved = [p["key"] for p in products if not captions[p["key"]][1]][:slots]
+            deadline = self.studio.deadline(datetime.now(TZ)) if reserved else None
             for product in products:
                 caption, problem = captions[product["key"]]
                 links = [dict(key=l["key"], link=l["link"]) for l in (product.get("analysis") or {}).get("links") or []
                          if l.get("key") and l.get("link")] or [dict(key=product["key"], link=product["link"])]
                 snapshot = dict(caption=caption, links=links, name=product["name"][:120])
+                if product["key"] in reserved:
+                    snapshot.update(studio=True, studio_deadline=deadline.isoformat())
                 state = "blocked" if problem else "pending"
                 with self.store.db() as db:
                     db.execute("INSERT OR REPLACE INTO deliveries(run_id,product_key,state,error,snapshot) VALUES(?,?,?,?,?)",
@@ -1270,6 +1309,8 @@ class Engine:
                 if problem:
                     self.store.log("error", f"{product['name'][:40]}: entrega bloqueada. {problem}")
                     continue
+                if product["key"] in reserved:
+                    continue  # No video yet: the Studio (or the cutoff fallback) creates it.
                 try:
                     video_id = self.videos.enqueue(run_id, product, snapshot=snapshot)
                 except Exception as error:
@@ -1282,7 +1323,9 @@ class Engine:
             status = self.store.refresh_delivery(run_id)
             self.store.log("info" if status != "partial" else "error",
                            f"Envio #{run_id}: {queued} de {len(products)} produto(s) aguardando vídeo; cada um vai ao "
-                           "Telegram numa única mensagem quando o vídeo ficar pronto.")
+                           "Telegram numa única mensagem quando o vídeo ficar pronto."
+                           + (f" {len(reserved)} reservado(s) para o Estúdio até {deadline:%d/%m %H:%M}; sem geração "
+                              "até lá, viram vídeo automático." if reserved else ""))
             return queued
         finally:
             self.lock.release()
@@ -1294,6 +1337,10 @@ class Engine:
             self.videos.reconcile()
         except Exception as error:
             self.store.log("error", "Vídeos: " + safe_error(error))
+        try:
+            self.studio.fallback(now)
+        except Exception as error:
+            self.store.log("error", "Estúdio: " + safe_error(error))
         try:
             self.snapshot_sales(now)
         except Exception as error:
