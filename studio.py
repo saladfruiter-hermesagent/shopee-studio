@@ -934,6 +934,9 @@ class Studio:
         finish = dict(size=[1080, 1920], badge=badge(product), frames=True)
         if style == "problema":
             # The worker burns the 3 callouts and leaves the spoken narration without subtitles.
+            # Fim limpo (pedido do usuário, 12/11): sem "★ nota • N vendidos" e sem "CONFIRA NO PRODUTO MARCADO".
+            # O clique fica com a 3ª chamada, que pulsa até o fim sobre o plano do produto inteiro.
+            finish.pop("badge", None)
             finish.update(subtitles=False, callouts=[c.strip().upper() for c in script.get("callouts") or []][:CALLOUTS])
         payload = dict(product=product["name"][:120], studio_id=session_id,
                        images=[{k: v for k, v in ref.items() if k != "id"} for ref in refs],

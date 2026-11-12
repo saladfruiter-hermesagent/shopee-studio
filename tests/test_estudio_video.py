@@ -340,7 +340,8 @@ class StudioVideoTest(unittest.TestCase):
         finish = self.claim()["payload"]["finish"]
         self.assertFalse(finish["subtitles"])
         self.assertEqual(finish["callouts"], ["GELADEIRA BAGUNÇADA?", "TUDO NO LUGAR", "SUA COZINHA PEDE ISSO"])
-        self.assertTrue(finish["badge"] and finish["frames"])
+        self.assertTrue(finish["frames"])
+        self.assertNotIn("badge", finish)  # fim limpo: sem "★ nota • N vendidos" e sem "CONFIRA NO PRODUTO MARCADO"
 
     def test_problem_style_keeps_two_seconds_of_breath(self):
         """A fala tem de terminar antes do fim: 23 palavras (as duas que saíram cortadas em 12/11) são recusadas."""
@@ -395,6 +396,19 @@ class StudioVideoTest(unittest.TestCase):
         for callouts, expected in cases.items():
             self.assertIn(expected, " ".join(studio_module.callout_issues(list(callouts), name)), callouts)
         self.assertIn("exatamente 3", studio_module.callout_issues(["A", "B"], name)[0])
+
+    def test_problem_style_ends_clean_without_badge(self):
+        """Sem selo e sem botão no fim: o worker só queima as 3 chamadas (o badge continua no automático/clássico)."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))
+        import subtitles
+        limpo = subtitles.ass([], 1080, 1920, None, ["A", "B", "C"], 10.0)
+        self.assertNotIn("vendidos", limpo)
+        self.assertNotIn("CONFIRA NO PRODUTO MARCADO", limpo)
+        self.assertNotIn("Style: Selo", limpo)
+        self.assertEqual(sum(line.startswith("Style: Chamada") for line in limpo.splitlines()), 3)
+        com_selo = subtitles.ass([], 1080, 1920, dict(duration=10.0, rating="4,9", sold="12 vendidos"))
+        self.assertIn("★ 4,9 • 12 vendidos", com_selo)  # automático/clássico não muda
+        self.assertIn("CONFIRA NO PRODUTO MARCADO", com_selo)
 
     def test_worker_burns_styled_callouts_without_speech_subtitles(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))

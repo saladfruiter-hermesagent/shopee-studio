@@ -139,7 +139,7 @@ Em cada rascunho:
      cena) e o contraste deixa claro que sem o produto a rotina volta a ser pior. Cenas em 0–3 s (problema + câmera),
      3–6 s (o produto resolve), 6–8 s (rotina melhor), 8–10 s (toque no produto). Traz **3 chamadas escritas na tela**
      (até 26 caracteres, editáveis): a dor (0,5–3 s, caixa vermelha), a virada (3,3–6 s, amarela) e o não-perca (6,3 s
-     até o fim, laranja pulsando, junto do selo de compra). As chamadas entram na faixa de cima com efeito de "pop" e
+     até o fim, laranja pulsando). As chamadas entram na faixa de cima com efeito de "pop" e
      leve inclinação; o prompt do Flow pede a ação no centro/metade de baixo e continua proibindo texto desenhado pela
      IA. **A fala não ganha legenda** (nem é transcrita). Regras das chamadas: sem emojis, sem preço/desconto/frete/
      estoque/cupom/"corra"/"só hoje"/"últimas unidades", nenhum número fora do nome, as 3 diferentes e a 3ª sem
@@ -157,7 +157,10 @@ Em cada rascunho:
    painel mostra quanto foi gasto em manuais no dia e no mês). Um vídeo por vez por rascunho.
    O worker anexa as referências em **Elementos** (fotos suas são baixadas do painel com o token do worker,
    `GET /api/worker/tasks/<id>/images/<foto>`, só as listadas na tarefa), confere que a caixa tem exatamente N anexos,
-   gera 1 cena de 10 s e acabamento do Modo Moderno (1080×1920, legenda, selo). Pronto, o vídeo fica em **"pronto,
+   gera 1 cena de 10 s e acabamento em 1080×1920 (legenda da fala desligada no estilo novo). No estilo
+   **Problema real** o fim é limpo: **sem** o selo "★ nota • N vendidos" e **sem** o botão "CONFIRA NO PRODUTO
+   MARCADO" — quem puxa o clique é a 3ª chamada, pulsando sobre o plano do produto inteiro. O automático e o
+   clássico continuam com o selo e o botão. Pronto, o vídeo fica em **"pronto,
    aguardando sua aprovação"** (`review`): nada vai ao Telegram sozinho (E4). A prévia toca dentro de uma moldura que
    imita a Shopee Vídeo, com a fidelidade (quadros × até 3 fotos de referência), a legenda que vai ao Telegram e as ações
    **Aprovar e enviar ao Telegram** (uma mensagem com vídeo, legenda do Estúdio — a salva no momento do envio — e os
