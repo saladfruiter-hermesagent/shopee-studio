@@ -133,9 +133,22 @@ Em cada rascunho:
    regras do Modo Moderno (18–25 palavras, termina em "produto marcado", sem "Olha"/"Gente" nem abertura repetida,
    nenhum número fora do nome) e as 3 narrações começam diferente. Edição livre: o card mostra o que fugiu das regras
    sem bloquear. Ao escolher um, aparece o prompt do Flow.
+   **Estilo do roteiro** (escolhido antes de gerar; padrão na tela: o novo):
+   - **Problema real + chamadas na tela** (E12): cada roteiro parte de uma dor real do dia a dia que o produto resolve
+     (plausível pela ficha), a câmera prende o olhar no 1º segundo (aproximação até a lente, chicote, câmera caindo na
+     cena) e o contraste deixa claro que sem o produto a rotina volta a ser pior. Cenas em 0–3 s (problema + câmera),
+     3–6 s (o produto resolve), 6–8 s (rotina melhor), 8–10 s (toque no produto). Traz **3 chamadas escritas na tela**
+     (até 26 caracteres, editáveis): a dor (0,5–3 s, caixa vermelha), a virada (3,3–6 s, amarela) e o não-perca (6,3 s
+     até o fim, laranja pulsando, junto do selo de compra). As chamadas entram na faixa de cima com efeito de "pop" e
+     leve inclinação; o prompt do Flow pede a ação no centro/metade de baixo e continua proibindo texto desenhado pela
+     IA. **A fala não ganha legenda** (nem é transcrita). Regras das chamadas: sem emojis, sem preço/desconto/frete/
+     estoque/cupom/"corra"/"só hoje"/"últimas unidades", nenhum número fora do nome, as 3 diferentes e a 3ª sem
+     "produto marcado" (o botão do fim já diz). A urgência vem do problema, nunca de escassez inventada.
+   - **Clássico**: o da S1 (gancho 0–2 s, demonstração, prova, chamada) com a legenda da narração. Rascunhos antigos
+     ficam nele.
 5. **Vídeo (S2):** "Gerar vídeo · N créditos" mostra as fotos que vão ao Flow (até **4**, a principal primeiro), o
    prompt e o custo, e só cria a tarefa depois do `confirm` (E3). O painel recusa sem criar nada se o custo mudou desde
-   que a tela abriu, se o worker de vídeo for anterior ao **1.3.0**, com a geração desligada ou pausada, roteiros de
+   que a tela abriu, se o worker de vídeo for anterior ao **1.4.0**, com a geração desligada ou pausada, roteiros de
    outro formato ou produto do dia que já passou do corte. **Do dia** conta no teto diário; **Manual** fica fora (o
    painel mostra quanto foi gasto em manuais no dia e no mês). Um vídeo por vez por rascunho.
    O worker anexa as referências em **Elementos** (fotos suas são baixadas do painel com o token do worker,

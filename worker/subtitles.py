@@ -105,8 +105,45 @@ def badge_events(duration, rating, sold):
             f"Dialogue: 1,{_time(start)},{_time(end)},Botao,,0,0,0,,{{\\q2\\fad(250,0){pulse}}}CONFIRA NO PRODUTO MARCADO"]
 
 
-def ass(entries, width, height, badge=None):
-    """`badge` = dict(duration, rating, sold) adds the purchase badge (Modern mode)."""
+# Chamadas do Estúdio (estilo "problema"): 3 textos grandes na faixa de cima, cada um com sua cor e janela de tempo
+# (fração da duração). A 3ª fica até o fim, junto do selo de compra. Cores em ASS (&HAABBGGRR): texto, caixa.
+CALLOUT_LOOKS = (("&H00FFFFFF", "&H003539E5", "\\frz3"),    # a dor: branco na caixa vermelha #E53935
+                 ("&H00101010", "&H0000D4FF", "\\frz-3"),   # a virada: preto na caixa amarela #FFD400
+                 ("&H00FFFFFF", ORANGE, "\\frz2"))          # não perca: branco no laranja, pulsando
+CALLOUT_WINDOWS = ((0.05, 0.30), (0.33, 0.60), (0.63, 1.0))
+
+
+def callout_styles(width, height):
+    size = round(height * 0.046)
+    return [f"Style: Chamada{i},{FONT},{size},{text},{text},{box},{box},-1,0,0,0,100,100,0,0,3,"
+            f"{round(size * 0.32)},0,8,{round(width * 0.09)},{round(width * 0.09)},{round(height * 0.15)},1"
+            for i, (text, box, _) in enumerate(CALLOUT_LOOKS, 1)]
+
+
+def callout_events(callouts, duration):
+    """Each callout pops in (35% → 115% → 100%), slightly tilted; the last one keeps pulsing until the end."""
+    events = []
+    for index, text in enumerate(list(callouts)[:len(CALLOUT_LOOKS)]):
+        text = _escape(text).strip()
+        if not text:
+            continue
+        first, last = CALLOUT_WINDOWS[index]
+        start, end = duration * first, duration * last
+        pop = "\\fscx35\\fscy35\\t(0,170,\\fscx115\\fscy115)\\t(170,300,\\fscx100\\fscy100)"
+        pulse = ""
+        if index == len(CALLOUT_LOOKS) - 1:
+            pulse = "".join(f"\\t({300 + i * 600},{600 + i * 600},\\fscx108\\fscy108)"
+                            f"\\t({600 + i * 600},{900 + i * 600},\\fscx100\\fscy100)"
+                            for i in range(max(0, int((end - start - 0.3) / 0.6))))
+        fade = "\\fad(0,0)" if index == len(CALLOUT_LOOKS) - 1 else "\\fad(0,120)"
+        events.append(f"Dialogue: 2,{_time(start)},{_time(max(end, start + 0.3))},Chamada{index + 1},,0,0,0,,"
+                      f"{{{fade}{CALLOUT_LOOKS[index][2]}{pop}{pulse}}}{text}")
+    return events
+
+
+def ass(entries, width, height, badge=None, callouts=None, duration=None):
+    """`badge` = dict(duration, rating, sold) adds the purchase badge (Modern mode); `callouts` = up to 3 texts shown
+    big on the top band (Estúdio, style "problema"), timed on `duration`."""
     size = round(height * 0.047)
     margin = round(height * 0.17)  # Above the marketplace's bottom overlay (product card, buttons).
     outline = max(2, round(size * 0.09))
@@ -118,13 +155,15 @@ def ass(entries, width, height, badge=None):
              "MarginR, MarginV, Encoding",
              f"Style: Fala,{FONT},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
              f"{outline},1,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
-             *(badge_styles(width, height) if badge else []), "",
+             *(badge_styles(width, height) if badge else []), *(callout_styles(width, height) if callouts else []), "",
              "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     for entry in entries:
         text = entry["text"].replace("\\", "").replace("{", "(").replace("}", ")")
         lines.append(f"Dialogue: 0,{_time(entry['start'])},{_time(entry['end'])},Fala,,0,0,0,,{text}")
     if badge:
         lines += badge_events(badge["duration"], badge["rating"], badge["sold"])
+    if callouts:
+        lines += callout_events(callouts, duration or (badge or {}).get("duration") or 10.0)
     return "\n".join(lines) + "\n"
 
 
@@ -184,19 +223,23 @@ def finish_command(source, destination, subtitle_name, width, height, audio):
 
 
 def finish_video(source, narration, destination, workdir, finish, model_size="small", transcriber=transcribe):
-    """Modern mode: subtitles + purchase badge + 1080x1920, even when no speech was detected."""
+    """Modern mode: subtitles + purchase badge + 1080x1920, even when no speech was detected.
+    Estúdio "problema": `finish["subtitles"] = False` keeps the speech without subtitles (no transcription at all) and
+    `finish["callouts"]` burns the 3 callouts."""
     info = probe(source)
-    words = transcriber(source, model_size) if info["audio"] else []
+    speech = finish.get("subtitles", True)
+    words = transcriber(source, model_size) if info["audio"] and speech else []
+    callouts = [str(c) for c in finish.get("callouts") or [] if str(c).strip()][:len(CALLOUT_LOOKS)]
     entries = cues(align_to_script(words, narration)) if words else []
     width, height = (finish.get("size") or [info["width"], info["height"]])[:2]
     seal = finish.get("badge") or {}
     badge = dict(duration=info["duration"], rating=seal["rating"], sold=seal["sold"]) if seal.get("rating") else None
     subtitle = Path(workdir) / "legenda.ass"
-    subtitle.write_text(ass(entries, width, height, badge), encoding="utf-8")
+    subtitle.write_text(ass(entries, width, height, badge, callouts, info["duration"]), encoding="utf-8")
     subprocess.run(finish_command(source, destination, subtitle.name, width, height, info["audio"]),
                    cwd=workdir, check=True, timeout=600, capture_output=True)
     return dict(probe(destination), subtitles=len(entries), transcript=" ".join(e["text"] for e in entries),
-                badge=bool(badge))
+                badge=bool(badge), callouts=len(callouts))
 
 
 def extract_frames(source, folder, width=360):
