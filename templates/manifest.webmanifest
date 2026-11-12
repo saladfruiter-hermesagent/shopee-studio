@@ -1,0 +1,35 @@
+{
+  "name": "Shopee Studio",
+  "short_name": "Shopee Studio",
+  "description": "Painel de curadoria de ofertas de afiliado da Shopee: seleção do dia, Estúdio de vídeo e entrega no Telegram.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fa5815",
+  "theme_color": "#194d3b",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "categories": ["shopping", "productivity"],
+  "icons": [
+    {
+      "src": "/static/pwa-192.png?v={{ version }}",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa-512.png?v={{ version }}",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa-maskable-512.png?v={{ version }}",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

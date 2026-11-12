@@ -41,6 +41,15 @@ Painel pessoal para pesquisar, selecionar e acompanhar ofertas de afiliados Shop
 - **Estúdio:** abas com `role="tab"`/`aria-selected` e navegação por setas/Home/End; o seletor de fotos é alcançável por teclado (input visualmente escondido, não `display:none`); fotos declaram `width`/`height`.
 - **Entrega dos arquivos:** `/static` vai com `?v=<APP_VERSION>` e fica em cache longo (`immutable`); HTML e API seguem `no-store`. As respostas de texto saem com `gzip` (app.js de ~35 KB para ~12 KB) — o Waitress não comprime sozinho.
 
+### Instalar como app no celular (PWA)
+
+O painel é instalável: `/manifest.webmanifest`, `/sw.js` e os ícones `static/pwa-*.png`. No Android, abra o painel no Chrome e use ⋮ → **Instalar aplicativo**.
+
+- **Precisa ser HTTPS com certificado válido no aparelho.** Com aviso de certificado o Chrome recusa a instalação mesmo com o manifest correto — nesse caso instale a CA raiz do Caddy (`/mnt/user/appdata/caddy2_custom/data/caddy/pki/authorities/local/root.crt`) no Android.
+- Em `http://IP:8787` não há service worker (contexto inseguro): no máximo o Chrome oferece "Adicionar à tela inicial", que abre no navegador e não é o app instalado.
+- O service worker cacheia **só** `/static/*?v=<versão>`; HTML e `/api/*` sempre vêm da rede, para não mostrar fila, teto de créditos ou entregas desatualizados. O registro está em `static/app.js` e só roda em contexto seguro — em HTTP o painel continua idêntico.
+- Manifest e service worker são **públicos por necessidade**: o Chrome os busca antes de qualquer login. O guard do `app.py` libera exatamente esses dois caminhos (mais `/healthz` e `/static/`); qualquer arquivo novo servido na raiz precisa entrar nessa lista, senão volta 401 e a instalação não aparece.
+
 ## Modos: Legacy e Moderno
 
 Preferências → **Modo** escolhe como os produtos e os vídeos são escolhidos. Vale para as próximas consultas; cada produto guarda o modo com que foi escolhido (`mode`), e o vídeo dele segue esse modo.

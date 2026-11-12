@@ -27,6 +27,11 @@ abertas). O comportamento implementado está no `README.md`; este documento guar
 
 ## 2. Painel — o que sobrou da auditoria de front (modern-web-guidance)
 
+**PWA instalável (12/11/2026):** `/manifest.webmanifest` + `/sw.js` + ícones `static/pwa-*` e o registro no
+`app.js`. `Page.getAppManifest` e `Page.getInstallabilityErrors` do Chrome voltam vazios, e o service worker
+ativa com escopo `/`. Falta o usuário instalar no Android (`https://shopee.home.local` → ⋮ → Instalar
+aplicativo); se o Chrome reclamar do certificado, a CA do Caddy precisa estar instalada no aparelho.
+
 P1 a P8 estão implementados e no ar (tabela abaixo). Restam, por decisão sua:
 
 - **Contraste do tema claro:** 6 pares abaixo de 4,5:1 que **já existiam** antes do modo escuro (`--muted` em textos

@@ -151,6 +151,9 @@ $('#preview').onclick=async()=>{try{sendingRun=activeRun.id;const p=await api('/
 $('#confirm-send').onclick=async()=>{$('#confirm-send').disabled=true;try{const r=await post('/runs/'+sendingRun+'/send');$('#modal').close();toast(r.queued+' vídeo(s) na fila. Cada produto chega ao Telegram numa única mensagem quando o vídeo ficar pronto.');activeRun=await api('/runs/'+sendingRun);await refresh();}catch(e){toast(e.message);await refresh();}};
 $('#close-modal').onclick=()=>$('#modal').close();
 refresh(true).catch(()=>{});
+/* PWA: registra o service worker (só em contexto seguro — em http://IP:8787 não existe e o painel segue
+   igual). Ele cacheia apenas estáticos versionados; HTML e /api continuam vindo sempre da rede. */
+if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 setInterval(()=>{if(!$('#app').hidden&&!document.hidden)refresh().catch(e=>toast(e.message));},5000);
 
 $('#shopee-form').onsubmit=async e=>{e.preventDefault();try{await post('/shopee',{app_id:$('#shopee-app-id').value.trim(),secret:$('#shopee-secret').value.trim()});$('#shopee-secret').value='';await refresh(true);toast('Shopee configurada.');}catch(error){toast(error.message);}};

@@ -87,7 +87,9 @@ def create_app(data_dir=None, testing=False):
 
     @app.before_request
     def guard():
-        if request.path == "/healthz" or request.path.startswith("/static/"):
+        # Públicos: healthcheck, estáticos e os dois arquivos que o Chrome busca antes de qualquer login
+        # (manifest do PWA e service worker) — sem isso a instalação no Android é recusada com 401.
+        if request.path in ("/healthz", "/manifest.webmanifest", "/sw.js") or request.path.startswith("/static/"):
             return None
         if request.path == "/":
             return None
@@ -153,6 +155,21 @@ def create_app(data_dir=None, testing=False):
     @app.get("/")
     def home():
         return render_template("index.html", version=app_version())
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        # Manifest do PWA. Tem de ser público (o Chrome o busca antes de qualquer login) e sair com o
+        # content-type da especificação; sem isso o "Instalar aplicativo" não aparece no Android.
+        return app.response_class(render_template("manifest.webmanifest", version=app_version()),
+                                  mimetype="application/manifest+json")
+
+    @app.get("/sw.js")
+    def service_worker():
+        # Na raiz para o service worker ter escopo "/" (servido de /static/ o escopo ficaria restrito à
+        # pasta). Sem cache: o navegador precisa enxergar a versão nova do worker a cada deploy.
+        response = app.send_static_file("sw.js")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/healthz")
     def health():
