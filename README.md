@@ -144,6 +144,10 @@ Em cada rascunho:
      IA. **A fala não ganha legenda** (nem é transcrita). Regras das chamadas: sem emojis, sem preço/desconto/frete/
      estoque/cupom/"corra"/"só hoje"/"últimas unidades", nenhum número fora do nome, as 3 diferentes e a 3ª sem
      "produto marcado" (o botão do fim já diz). A urgência vem do problema, nunca de escassez inventada.
+     **Fim com respiro:** a fala fica em **14–19 palavras** (clássico e automático continuam em 18–25) porque em ~2,3
+     palavras/s 23 palavras enchiam os 10 s e o vídeo parecia cortado. As cenas de 8–10 s são um plano mais aberto,
+     câmera parada e o **produto inteiro** no quadro, com ~2 s sem fala; o prompt do Flow pede esse encerramento
+     calmo e a tela mostra a faixa de palavras do estilo escolhido.
    - **Clássico**: o da S1 (gancho 0–2 s, demonstração, prova, chamada) com a legenda da narração. Rascunhos antigos
      ficam nele.
 5. **Vídeo (S2):** "Gerar vídeo · N créditos" mostra as fotos que vão ao Flow (até **4**, a principal primeiro), o

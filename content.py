@@ -234,14 +234,14 @@ def spoken_numbers(text):
     return found
 
 
-def modern_script_problems(script, name, banned_openings=(), hands_only=True):
+def modern_script_problems(script, name, banned_openings=(), hands_only=True, words=None):
     """Modern mode rules on top of script_problems: hands only, closing on the tagged product, varied openings
     and no number that is not in the listing name. `hands_only=False` (Estúdio, formats with a person) keeps
     every rule except the face check."""
     problems = []
     narration = script.get("narration") if isinstance(script.get("narration"), str) else ""
     count = len(narration.split())
-    low, high = MODERN_NARRATION_WORDS
+    low, high = words or MODERN_NARRATION_WORDS  # Estúdio "problema" passa um teto menor: a fala tem de sobrar respiro
     if not low <= count <= high:
         problems.append(f"narração com {count} palavras; use de {low} a {high}")
     sentences = [s for s in re.split(r"[.!?]+", _folded(narration)) if s.strip()]

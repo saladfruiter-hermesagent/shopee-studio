@@ -329,6 +329,11 @@ class StudioVideoTest(unittest.TestCase):
         self.assertEqual(draft["scripts"][1]["callouts"], s1.CALLOUTS[1])
         self.assertEqual(draft["scripts"][1]["problems"], [])
         self.assertIn("0–3 s, problema e câmera:", draft["prompt"])
+        self.assertIn("8–10 s, respiro final (sem fala, produto inteiro e câmera parada)", draft["prompt"])
+        self.assertIn("A fala termina antes do fim", draft["prompt"])
+        self.assertEqual(draft["narration_words"], [14, 19])
+        self.assertTrue(all(14 <= s["words"] <= 19 for s in draft["scripts"]), [s["words"] for s in draft["scripts"]])
+        self.assertIn("de 14 a 19 palavras", prompt)
         self.assertIn("a faixa de cima fica livre", draft["prompt"])
         self.assertIn("Sem textos, legendas", draft["prompt"])  # the callouts are burned later, never drawn by the AI
         self.assertEqual(self.generate(sid).status_code, 202)
@@ -337,11 +342,24 @@ class StudioVideoTest(unittest.TestCase):
         self.assertEqual(finish["callouts"], ["GELADEIRA BAGUNÇADA?", "TUDO NO LUGAR", "SUA COZINHA PEDE ISSO"])
         self.assertTrue(finish["badge"] and finish["frames"])
 
+    def test_problem_style_keeps_two_seconds_of_breath(self):
+        """A fala tem de terminar antes do fim: 23 palavras (as duas que saíram cortadas em 12/11) são recusadas."""
+        sid = self.draft(style="problema")
+        long_narration = ("Suportar poeira de reforma tira qualquer um do sério. O revestimento vinílico adesivo renova "
+                          "sem sujeira. Evite esse transtorno: toque no produto marcado.")
+        long = self.post(f"/studio/{sid}/scripts/0", dict(script=dict(narration=long_narration))).json["scripts"][0]
+        self.assertIn("narração com 23 palavras; use de 14 a 19", long["problems"])
+        short = self.post(f"/studio/{sid}/scripts/0", dict(script=dict(narration="Cansado de bagunça na cozinha? Este pote fecha "
+                                                                       "com um clique. Toque no produto marcado."))).json
+        self.assertEqual(short["scripts"][0]["problems"], [])
+        self.assertEqual(self.get(sid)["narration_words"], [14, 19])
+
     def test_classic_style_is_unchanged(self):
         self.connect_worker()
         sid = self.draft()
         draft = self.get(sid)
         self.assertEqual(draft["scripts_style"], "classico")
+        self.assertEqual(draft["narration_words"], [18, 25])
         self.assertNotIn("callouts", draft["scripts"][0])
         self.assertIn("0–2 s, gancho:", draft["prompt"])
         self.generate(sid)

@@ -40,6 +40,15 @@ SCRIPTS_OUTPUT = dict(description="Mantém os alimentos frescos e a geladeira or
 CALLOUTS = [["CHEGA DE POTE VAZANDO", "FECHA COM UM CLIQUE", "NÃO FIQUE SEM O SEU"],
             ["GELADEIRA BAGUNÇADA?", "TUDO NO LUGAR", "SUA COZINHA PEDE ISSO"],
             ["BOLSA MOLHADA DE NOVO?", "NADA VAZA", "SEM ELE NÃO DÁ"]]
+# Estilo "problema": cada fala cabe em 14–19 palavras (o vídeo tem 10 s e o fim precisa de ~2 s de respiro).
+PROBLEM_SCRIPTS = [
+    dict(SCRIPTS[0], narration="Cansado de bagunça na cozinha? Este pote fecha com um clique e mantém tudo fresco. "
+                              "Toque no produto marcado."),
+    dict(SCRIPTS[1], narration="Sabe aquele pote que vaza? Este aqui veda com um clique e organiza a geladeira. "
+                               "Toque no produto marcado."),
+    dict(SCRIPTS[2], narration="Repara como a tampa trava e segura o líquido sem vazar na bolsa. "
+                               "Toque no produto marcado."),
+]
 FACTS_OUTPUT = dict(facts=["Pote transparente com tampa azul", "Quatro travas laterais na tampa",
                            "Cabe na palma da mão", "Kit de potes (nome)"], avoid=["texto da embalagem"])
 
@@ -55,7 +64,8 @@ class StudioRunner:
             raise self.error
         output = SCRIPTS_OUTPUT if "scripts" in schema["properties"] else FACTS_OUTPUT
         if "callouts" in schema["properties"].get("scripts", {}).get("items", {}).get("properties", {}):
-            output = dict(output, scripts=[dict(script, callouts=CALLOUTS[i]) for i, script in enumerate(output["scripts"])])
+            # Estilo "problema": fala mais curta (14–19 palavras) para sobrar respiro no fim e as 3 chamadas.
+            output = dict(output, scripts=[dict(PROBLEM_SCRIPTS[i], callouts=CALLOUTS[i]) for i in range(len(SCRIPTS))])
         assert check(output) == [], check(output)
         return json.loads(json.dumps(output)), "Fake", ["Fake: ok"]
 

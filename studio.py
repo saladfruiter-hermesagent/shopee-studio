@@ -75,6 +75,9 @@ SCRIPT_STYLES = {
     "classico": dict(label="Clássico",
                      text="Gancho, demonstração, prova e chamada, com a legenda da narração."),
 }
+# A fala do estilo "problema" é mais curta que a do automático (18–25): em ~2,3 palavras/s, 14–19 palavras terminam
+# entre 6 e 8 s e sobram ~2 s só com o produto inteiro no quadro — sem isso o vídeo "acaba do nada".
+PROBLEM_NARRATION_WORDS = (14, 19)
 CALLOUTS = 3
 CALLOUT_LIMIT = 26
 CALLOUT_ROLES = ("a dor · 0–3 s", "a virada · 3–6 s", "não perca · 6–10 s")
@@ -296,6 +299,7 @@ def problem_scripts_prompt(product, facts, video_format, banned, names):
               "Só mãos em cena (visão em primeira pessoa ou close): nenhum rosto, sorriso ou pessoa de frente para a câmera.")
     voice = ("A fala é da pessoa em cena, olhando para a câmera, em tom de conversa (como quem avisa uma amiga)."
              if speaks else "A fala é uma voz em off, natural e com energia.")
+    low, high = PROBLEM_NARRATION_WORDS
     return f"""Você cria anúncios curtíssimos ({VIDEO_SECONDS} s, vertical 9:16) para a Shopee Vídeo. Quem assiste está
 rolando o feed e decide em 1 segundo se para. O vídeo é feito por uma IA que recebe as fotos do produto como referência
 ({", ".join(names)}).
@@ -327,7 +331,9 @@ Cada roteiro tem:
 - "hook" (0–3 s): o problema acontecendo + o movimento de câmera que prende o olhar.
 - "demo" (3–6 s): o produto entrando e resolvendo, com uma ação concreta e observável.
 - "benefit" (6–8 s): o resultado visível — a rotina melhor.
-- "cta" (8–10 s): gesto que convida a tocar no produto marcado (aproximar o produto da lente, apontar para baixo).
+- "cta" (8–10 s): o RESPIRO final — o produto INTEIRO no quadro, câmera parada (plano mais aberto que as cenas
+  anteriores), com um gesto curto convidando a tocar no produto marcado. Nada de aproximar da lente nem fechar o
+  enquadramento: quem assiste precisa ver o produto completo antes de o vídeo acabar.
   Cenas filmáveis, em português, até {SCRIPT_FIELD_LIMIT} caracteres cada; sem textos, setas ou elementos gráficos na
   cena (as chamadas abaixo são aplicadas depois, por cima do vídeo).
 - "callouts": exatamente 3 chamadas que aparecem ESCRITAS na tela, grandes e estilizadas, de 3 a {CALLOUT_LIMIT}
@@ -338,7 +344,8 @@ Cada roteiro tem:
   "SUA ROTINA PEDE ISSO"). Não escreva "produto marcado" nela: o botão do fim do vídeo já diz isso.
   A urgência vem do problema, nunca de escassez ou preço: proibido preço, desconto, porcentagem, frete, estoque,
   cupom, "corra", "só hoje", "últimas unidades" e qualquer número que não esteja no nome do anúncio.
-- "narration": a fala completa, PT-BR natural, de {low} a {high} palavras (não vai legenda na tela). A primeira frase
+- "narration": a fala completa, PT-BR natural, de {low} a {high} palavras (não vai legenda na tela) — mais longa que
+  isso não caberia: a fala tem de TERMINAR antes do fim do vídeo, deixando ~2 s de silêncio sobre o plano final. A primeira frase
   é a dor (pergunta ou afirmação que a pessoa reconhece); depois vem a solução; a última frase lembra que sem ele o
   dia fica pior e cita "{CLOSING}" (ex.: "Não volte para o sufoco: toque no {CLOSING}."). Não comece com "Olha" nem
   "Gente", nem com estas aberturas já usadas: {banned_text}. Os 3 roteiros começam de jeitos diferentes. Todo número
@@ -379,7 +386,8 @@ def callout_issues(callouts, name):
 def script_issues(script, name, video_format, banned=(), style="classico"):
     """Problems of one script under the Studio rules (the same as the Modern mode, faces allowed in 'provador')."""
     problems = script_problems(script)
-    problems += modern_script_problems(script, name, banned, hands_only=video_format not in PERSON_FORMATS)
+    problems += modern_script_problems(script, name, banned, hands_only=video_format not in PERSON_FORMATS,
+                                      words=PROBLEM_NARRATION_WORDS if style == "problema" else None)
     angle = script.get("angle")
     if not isinstance(angle, str) or not angle.strip() or len(angle) > ANGLE_LIMIT:
         problems.append(f"angle vazio ou com mais de {ANGLE_LIMIT} caracteres")
@@ -438,7 +446,10 @@ def studio_prompt(script, video_format, facts, references, style="classico"):
                   "claramente melhor no final. Câmera com movimento intencional e energia desde o primeiro segundo.",
                   "Mantenha o produto e a ação no centro e na metade de baixo do quadro; a faixa de cima fica livre.",
                   f"0–3 s, problema e câmera: {script['hook'].strip()}", f"3–6 s, o produto resolve: {script['demo'].strip()}",
-                  f"6–8 s, resultado: {script['benefit'].strip()}", f"8–10 s, chamada: {script['cta'].strip()}"]
+                  f"6–8 s, resultado: {script['benefit'].strip()}",
+                  f"8–10 s, respiro final (sem fala, produto inteiro e câmera parada): {script['cta'].strip()}",
+                  "A fala termina antes do fim: o último trecho é só a imagem calma do produto inteiro, sem corte seco "
+                  "e sem movimento brusco de câmera no final."]
     else:
         lines += [f"0–2 s, gancho: {script['hook'].strip()}", f"2–6 s, demonstração: {script['demo'].strip()}",
                   f"6–8 s, prova: {script['benefit'].strip()}", f"8–10 s, chamada: {script['cta'].strip()}"]
@@ -1033,6 +1044,7 @@ class Studio:
                     format_label=format_label(video_format) if video_format else "",
                     scripts=items, scripts_format=scripts.get("format"), provider=scripts.get("provider"),
                     scripts_style=style if items else None,
+                    narration_words=list(PROBLEM_NARRATION_WORDS if style == "problema" else MODERN_NARRATION_WORDS),
                     caption=caption, chosen=chosen, prompt=prompt, job=job, reservation=reservation,
                     video=videos[0] if videos else None, videos=videos[:10], generation=generation,
                     created=row["created"], updated=row["updated"])
