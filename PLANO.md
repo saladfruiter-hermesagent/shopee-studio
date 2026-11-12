@@ -1,119 +1,47 @@
-# Plano — Shopee Studio: melhorias pendentes
+# Plano — Shopee Studio: pendências
 
-## Estado e objetivo
+## Estado atual (11/11/2026)
 
-> **Modo Moderno** (seleção anticoncorrência, roteiro variado, selo e fidelidade do vídeo): plano, decisões e
-> andamento em [`PLANO_MODO_MODERNO.md`](PLANO_MODO_MODERNO.md).
+| Peça | Situação |
+|---|---|
+| Produção | thevault, imagem `ghcr.io/saladfruiter/shopee-studio:sha-cc51d32`, container `healthy`. Deploy em 11/11/2026 19:48 (BRT). |
+| Acesso | **`https://shopee.home.local`** (Caddy2 do thevault, TLS pela CA interna, `reverse_proxy 192.168.1.90:8787`; registro A no Pi-hole) e `http://192.168.1.90:8787` na LAN. |
+| Preferências em produção | modo **Moderno**, `top_count` 4, vídeo ligado, teto **100** créditos/dia, custo **15** por vídeo, `studio_slots` 2, consulta diária 06:00, snapshot e corte do Estúdio 22:00. |
+| Conferido no deploy | HTML e `/static` em `gzip`; `/static/*?v=<sha>` com `Cache-Control: public, max-age=31536000, immutable`, e sem `?v` em `no-store`; `<meta name="color-scheme" content="light dark">` presente. |
+| Entregas no ar | busca de equivalentes + mensagem única por produto (PR #15), Estúdio S1 (PR #28), painel dos PRs #29 e #30. |
+| Testes | `python -m unittest discover -s tests` → 165 OK. |
 
-Este documento contém apenas o trabalho pendente e o andamento das melhorias em curso. O plano antigo, as etapas executadas e os registros de implantação foram retirados a pedido do usuário. O comportamento implementado está descrito no `README.md`.
+Planos irmãos: [`PLANO_MODO_MODERNO.md`](PLANO_MODO_MODERNO.md) (seleção anticoncorrência, roteiro variado, selo e
+fidelidade do vídeo — **nenhuma decisão pendente**) e [`PLANO_ESTUDIO.md`](PLANO_ESTUDIO.md) (geração assistida, S2–S4
+abertas). O comportamento implementado está no `README.md`; este documento guarda só o que falta.
 
-**Escopo confirmado:** melhorar a busca de anúncios equivalentes e simplificar a entrega no Telegram para uma única mensagem por produto, com vídeo, descrição e links. O usuário pediu as três entregas num PR só e confirmou os limites propostos do piloto.
+## 1. Verificações que dependem do usuário
 
-**Situação:** as Entregas 1, 2 e 3 estão implementadas na branch `feat/busca-progressiva-video-unico` (PR #15), com testes automatizados. A comparação real da execução #29 foi feita (resultado abaixo). Faltam a conferência do usuário no `pc1` e no Telegram de teste, a decisão sobre a etapa condicionada, o merge e o deploy.
+1. **Mensagem única no Telegram real (aceite E3.6):** conferir no cliente que o produto chega como **uma** mensagem,
+   com o vídeo legendado, a descrição copiável e os links numerados abrindo. Não gasta crédito — serve o primeiro
+   vídeo entregue depois do deploy.
+2. **Revisão visual dos 18 links aprovados** da comparação real de 31/10 (fotos lado a lado do principal e de cada
+   aprovado); ver a última seção deste documento.
+3. **Estúdio S1 no `pc1`/celular:** abas Do dia/Manual, fotos do celular, ficha visual e os 3 roteiros. Está em uso em
+   produção (`studio_slots` 2), mas nunca foi conferido por você no navegador.
 
-## Regra de equivalência (definida pelo usuário em 31/10/2026)
+## 2. Painel — o que sobrou da auditoria de front (modern-web-guidance)
 
-Não precisa ser completamente igual: basta ser o mesmo produto na comparação por foto. Bem semelhante é aceito.
-- Outro ângulo, fundo, iluminação, foto de outro vendedor ou pequenas diferenças de apresentação não impedem a aprovação. Falta de marca, voltagem ou modelo no título também não.
-- Fica de fora o que, na foto, é outro produto (formato, design, cor ou componentes) e o que o título informa com medida, capacidade, voltagem ou quantidade de kit diferente da informada pelo principal. Esse conflito de medidas também é conferido no código, mesmo quando o modelo aprova.
-- Incerto fica só para foto que não permite comparar. Incertos continuam fora dos links.
-- Substitui a regra anterior ("foto igual não prova identidade; não inferir marca, voltagem ou variante ausente").
+P1 a P8 estão implementados e no ar (tabela abaixo). Restam, por decisão sua:
 
-## 1. Resultado da comparação real (execução #29, 31/10/2026)
+- **Contraste do tema claro:** 6 pares abaixo de 4,5:1 que **já existiam** antes do modo escuro (`--muted` em textos
+  de 10–11 px, `nav-label`, rodapé da sidebar, pílula de filtro, símbolo do estado vazio). Mexer neles muda o visual
+  claro, por isso ficaram fora. PR pequeno, só de tokens.
+- **Porta 8787 publicada em HTTP:** o Caddy já serve HTTPS; parar de publicar a porta deixa o painel só no endereço
+  seguro. Mexe no `compose.yaml`, depende de confirmação.
+- **`COOKIE_SECURE=true`:** o `README` recomenda com proxy HTTPS e o container roda com o padrão (`false`). Ligar
+  endurece o cookie de sessão e **derruba o login por `http://192.168.1.90:8787`** — só faz sentido junto do item
+  anterior. Precisa de `Update Stack`.
+- **`log` no bloco `shopee.home.local` do Caddy:** hoje só o `ds` tem log de acesso. Serve para diagnosticar problema
+  de login/cópia pelo celular (`docker logs Caddy2`).
 
-### Com a regra por foto (vigente)
-
-| Produto | Ao modelo | Avaliação do modelo | Links | Encerrou | Tempo |
-|---|---|---|---|---|---|
-| Bicicleta ergométrica 120kg | 8 | 8 mesmo produto | 6 | 5 equivalentes aprovados (1 rodada) | 64 s |
-| Kit 20 potes 2,3L/1,1L/480ml | 11 | 4 mesmo produto · 7 diferentes (kits de 10, outros potes) | 5 | resultados esgotados (2 rodadas) | 143 s |
-| Serra mármore Bosch GDC 150 | 8 | 8 mesmo produto (inclui anúncios 127V e 220V; o principal não informa voltagem) | 6 | 5 equivalentes aprovados (1 rodada) | 62 s |
-| Espelho orgânico 170x70 | 24 | 2 mesmo produto · 22 diferentes (outro recorte, moldura ou sem LED) | 3 | orçamento de candidatos (3 rodadas) | 254 s |
-| Kit calças jeans skinny | 24 | 2 mesmo produto (kit 3 skinny) · 22 diferentes (slim, outras lavagens, zíper) | 3 | orçamento de candidatos (3 rodadas) | 272 s |
-
-- **18 links novos** nos 5 produtos (antes: 0). Total de cerca de 13 minutos para os 5. Os aprovados precisam da revisão visual do usuário.
-- Risco aceito com a regra: um link pode levar a uma variante não informada no título (ex.: serra 127V × 220V quando o principal não diz a voltagem).
-
-### Com a regra anterior (identidade estrita)
-
-
-Páginas reais da API gravadas em `scripts/fixtures/run29.json`, sem credenciais e sem links de afiliado. Sem exclusões de histórico. Modelo: agy Gemini 3.8 Flash na VM, cadeia padrão.
-
-| Produto | Busca antiga → ao modelo | Busca nova → ao modelo (inéditos) | Modelo (nova) | Encerrou | Tempo |
-|---|---|---|---|---|---|
-| Bicicleta ergométrica 120kg | 46 elegíveis → 8 | 67 elegíveis → 24 (16) | 0 mesmo produto · 16 incertos · 8 diferentes | orçamento de candidatos | 424 s |
-| Kit 20 potes 2,3L/1,1L/480ml | 5 → 5 | 11 → 11 (7) | 0 · 2 · 9 | resultados esgotados | 367 s |
-| Serra mármore Bosch GDC 150 | 10 → 8 | 28 → 24 (17) | 0 · 18 · 6 | prazo, na 3ª rodada | 601 s |
-| Espelho orgânico 170x70 | 37 → 8 | 76 → 24 (24) | 0 · 0 · 24 | orçamento de candidatos | 267 s |
-| Kit calças jeans skinny | 0 → 0 | 26 → 24 (24) | 0 · 0 · 24 | orçamento de candidatos | 203 s |
-
-- **Cobertura:** a busca nova levou ao modelo 107 candidatos contra 29, 88 deles fora da busca antiga. Os títulos ficaram muito mais próximos (bicicleta, potes e serra trouxeram anúncios com o título idêntico ou com as mesmas medidas).
-- **Aprovados (regra estrita):** nenhum link novo. O modelo marcou como incertos até os anúncios de título idêntico ao principal (bicicleta, potes, serra). Os motivos individuais desta comparação não foram gravados (o script passou a gravá-los depois); em #29, os incertos foram justificados por marca, voltagem ou variante não confirmadas. Pelos títulos, os espelhos e as calças comparados têm outro modelo, medida ou kit. O gargalo era a evidência exigida, não a busca; a regra por foto resolveu isso sem depender da etapa condicionada da seção 4.
-- **Tempo:** 3,4 a 10 minutos por produto (cerca de 60 a 100 s por rodada). Com 5 produtos, a análise diária passa de ~6 para ~25 minutos. A serra esgotou o prazo de 10 minutos na 3ª rodada; o painel agora registra isso como "prazo".
-- Na primeira execução do `--evaluate`, dois produtos falharam porque o worker embutido no script não mandava heartbeat durante tarefas longas. O script foi corrigido e os dois foram repetidos; o painel não tem esse problema (o worker real tem heartbeat próprio).
-
-## 2. Pendências antes do merge
-
-1. **Revisão visual dos 18 aprovados** pelo usuário (fotos lado a lado do principal e de cada aprovado).
-2. **Teste do usuário no painel isolado** (`http://192.168.1.250:8792`, dados fictícios de #29, sem worker): conferir os estados dos cards, o diagnóstico da busca, a prévia e os limites em Preferências.
-3. **Telegram real em destino de teste autorizado:** o usuário configura o bot e um chat/tópico de teste no painel isolado e toca em **Reenviar vídeo** no card do espelho. Deve chegar uma única mensagem: o vídeo já existente, com nome, descrição copiável e os links numerados. Conferir a cópia da descrição e a abertura de todos os links. Não gasta créditos do Flow.
-4. **Merge e deploy** só com autorização explícita. Antes do deploy no TheVault: diagnóstico atual, confirmar que não há vídeos em andamento (jobs antigos com foto continuam como resposta à foto), backup do SQLite, tag de rollback e janela fora do horário das 12:00.
-
-## 3. Critérios de aceite ainda não verificados com dados reais
-
-- Kit diferente e formato diferente: na comparação real com a regra por foto, kits de 10 potes, calças slim e espelhos de outro recorte saíram como diferentes. Medida conflitante nos dois títulos é rejeitada pelo código (testado).
-- Mensagem única recebida no cliente Telegram do usuário, com a descrição copiável e todos os links abrindo.
-
-## 4. Detalhes adicionais dos anúncios — etapa condicionada
-
-Com a regra por foto, esta etapa deixou de ser necessária por enquanto. Se o piloto voltar a ficar limitado por falta de voltagem, composição ou variante, investigar uma fonte acessível de detalhes do anúncio. O fluxo atual compara título e imagem; não presumir que especificações e variantes estejam disponíveis na consulta usada. Validar uma fonte real antes de integrar, registrar origem dos atributos e manter incerto quando não houver confirmação. Não contornar login/CAPTCHA nem tratar conteúdo do anúncio como instruções. Essa etapa depende dos resultados do piloto.
-
-## 5. Riscos
-
-- Mais consultas e rodadas aumentam latência e uso de quota. A busca não garante seis links; os critérios de identidade continuam.
-- O envio depende do vídeo pronto: falha de geração, teto atingido ou vídeo desligado deixam produtos sem entrega até intervenção, com o motivo visível no card (política confirmada pelo usuário).
-- Não alterar teto de créditos, segurança do worker, prevenção de geração duplicada ou fluxo de login/2FA/CAPTCHA.
-- Arquivos não rastreados fora do escopo: `daily_shopee_top5.ps1`, `docker-schedule.sh`, `get_telegram_chat_id.ps1`, `install_daily_task.ps1`.
-
-## Andamento
-
-Branch `feat/busca-progressiva-video-unico`. Testes: `python -m unittest discover -s tests -v`.
-
-| # | Pedido | Como ficou | Estado |
-|---|---|---|---|
-| E1.1 | Termos de busca sem perder medidas, decimais e kit | `analysis.search_terms`/`search_queries`: `2,3litros`, `1,1litro`, `170x70cm`, `GDC 150`, `kit 20`, `5.0`, `i12` preservados; `content.name_tokens` intacto | feito, testado |
-| E1.2 | Até 3 consultas únicas | identidade + atributos; mesma medida com outra grafia (`2,3l`, `170x70`); ampla (kit + 3 palavras, sem comerciais/secundárias) | feito, testado |
-| E1.3 | Coleta limitada, paginação, deduplicação, exclusões, falhas parciais | `analysis.CandidatePool`: páginas 1 de todas as consultas antes das 2; nova página só se o lote ficar curto; até 2 páginas e 6 buscas; motivos de descarte exclusivos (contagens fecham); consulta que falha não para as outras; prazo global | feito, testado |
-| E1.4 | Ordenação por atributos e diversidade | quem mantém medidas primeiro, medida conflitante (127V × 220V) por último, alternando consultas no mesmo nível | feito, testado |
-| E1.5 | Comparador antigo × novo | `scripts/compare_equivalent_search.py`: fixtures por padrão, `--live` com gravação sanitizada, `--evaluate` com agy local; sem `Engine.collect`, banco de produção, Telegram ou Flow | feito; execução real em 31/10 (seção 1) |
-| E2.1 | Avaliação em rodadas | lotes de 8, até 3 rodadas e 24 candidatos; IDs C1… mapeados por lote; para em 5 aprovados | feito, testado |
-| E2.2 | Conteúdo uma vez; falhas posteriores preservam aprovados | 1ª rodada escreve legenda/roteiro; as seguintes usam prompt e schema só de equivalência; rodada com falha deixa o lote como incerto | feito, testado |
-| E2.3 | Prazo e orçamento globais | 10 min por produto aplicados à busca, às chamadas do modelo, novas tentativas e fallbacks; não reinicia por rodada | feito, testado |
-| E2.4 | Diagnóstico persistido | `analysis.search`: consultas/páginas, brutos/únicos/repetidos, descartes por motivo, rodadas, chamadas e novas tentativas HTTP, motivo de encerramento, duração | feito, testado |
-| E2.5 | Painel | resumo visível no card + detalhes expansíveis (teclado, celular); seção "Busca de equivalentes" no "Por que entrou?"; limites recolhidos em Preferências | feito; conferido no navegador (desktop e 390 px) |
-| E3.1 | Uma mensagem por produto | `send` só reserva vídeos; `sendVideo` único com nome, descrição `<pre>` e links numerados; nenhuma foto, nenhum prompt separado | feito, testado |
-| E3.2 | Retrato da mensagem | legenda e links congelados em `deliveries.snapshot`/`videos.snapshot`; "Gerar vídeo ↻" reutiliza o mesmo retrato | feito, testado |
-| E3.3 | Limite da legenda | 1.024 caracteres após o HTML (Bot API conferida); encurta o nome; se não couber, bloqueia o produto com motivo, sem cortar links | feito, testado |
-| E3.4 | Estados e idempotência | entrega por produto: aguardando vídeo, entregue, não entregue, recusado (Reenviar sem créditos), não confirmado (sem repetição), bloqueado; consulta: Aguardando vídeos / Confirmado / Parcial; reservados excluídos de novas consultas | feito, testado |
-| E3.5 | Compatibilidade | migração só aditiva (colunas novas); histórico antigo legível; jobs antigos sem retrato continuam respondendo à foto | feito, testado |
-| E3.6 | Teste real no Telegram | painel isolado com vídeo pronto já existente | pendente (seção 2) |
-
-### Decisões tomadas sem perguntar
-
-- Com a regra por foto, medida, capacidade, voltagem ou kit informados de forma diferente nos dois títulos continuam rejeitando (no modelo e no código). Valor ausente em um dos lados não conta como diferença.
-
-- `candidate_budget` continua sendo o tamanho do lote (8; 0 desliga a busca). O total de 24 é um campo novo (`candidate_total`), assim como consultas, páginas, buscas, rodadas e prazo; todos ficam em Preferências → Limites da busca.
-- Produto aguardando vídeo fica reservado (excluído de novas consultas). Produto com falha antes do Telegram volta a ser elegível; se outra consulta já o enviou, "Gerar vídeo ↻" é recusado.
-- Vídeo recusado pelo Telegram mantém o produto reservado enquanto o arquivo espera o "Reenviar vídeo".
-- Pausa da fila, teto atingido e vídeo desligado deixam o produto "não entregue" (com "Gerar vídeo ↻"), não pendente.
-- A prévia de uma consulta já enviada mostra a mensagem congelada e o estado de cada produto.
-- Fallback do modelo continua entregando o texto automático, agora com o aviso dentro da legenda do vídeo.
-
-## Melhorias web do painel (módulo modern-web-guidance)
-
-Auditoria em 11/11/2026 no código que roda em produção (`origin/main` 89d74e8, conferido byte a byte
-contra o container do thevault). O `legacy-scan` do modern-web-guidance deu **0 achados** nas 33 guias
-com regra determinística: o ganho não é remover padrão antigo, é aplicar padrão moderno ausente.
+Auditoria em 11/11/2026 no código que roda em produção. O `legacy-scan` do modern-web-guidance deu **0 achados** nas
+33 guias com regra determinística: o ganho não era remover padrão antigo, e sim aplicar padrão moderno ausente.
 
 | # | Item | Estado |
 |---|---|---|
@@ -124,14 +52,108 @@ com regra determinística: o ganho não é remover padrão antigo, é aplicar pa
 | P5 | Preferências: `novalidate` + validação por campo (preço, vendas, notas, categorias, URL do Flow, modelo, pesos 100), `aria-invalid`/`aria-describedby`, foco no primeiro problema, aviso fixo para recusa do servidor, `<fieldset>/<legend>` nos grupos e custo em créditos no botão de confirmar envio | feito |
 | P6 | Estúdio: input de arquivo visualmente escondido (mas focável, com anel no label), abas com `role="tab"`/`aria-selected`/`aria-controls` + setas/Home/End, fotos com `width`/`height`, botões de foto com 44 px de alvo; imagens da grade com `fetchpriority` na primeira fileira | feito |
 | P7 | Modo escuro: 57 tokens com `light-dark()` cobrindo os 106 usos de cor, `<meta name="color-scheme">`, paleta clara como fallback dentro de `@supports` (navegador antigo vê o de antes), contraste conferido por cálculo (branco/verde 8,8:1; painel verde 4,9–6,4:1) | feito |
-| P8 | Servidor: `/static` com `?v=<APP_VERSION>` em cache `immutable` e HTML/API em `no-store`; gzip nas respostas de texto (app.js 35.801 → 12.519 B, style.css 20.308 → 6.528 B, HTML 22 KB → 7,7 KB), `Vary: Accept-Encoding`, Range/206 e ETag tratados. HTTPS local (que habilitaria `navigator.clipboard`) segue pendente: é infra, precisa de Caddy na frente | feito (exceto HTTPS) |
+| P8 | Servidor: `/static` com `?v=<APP_VERSION>` em cache `immutable` e HTML/API em `no-store`; gzip nas respostas de texto (app.js 35.801 → 12.519 B, style.css 20.308 → 6.528 B, HTML 22 KB → 7,7 KB), `Vary: Accept-Encoding`, Range/206 e ETag tratados | feito |
+| P8b | HTTPS na LAN: `https://shopee.home.local` no Caddy2 do thevault (CA interna), com `isSecureContext=true` e `navigator.clipboard` disponível — o "Copiar texto" deixou de depender de `execCommand` | feito em 11/11 |
 
-Medições antes/depois (banco fictício com 200 ofertas, Playwright, `127.0.0.1`):
-`refresh()` 52–56 ms com 5.800 nós reconstruídos a cada 5 s → **0 reconstruções** quando nada muda;
-foco no `select` de triagem sobrevivia 6,5 s antes de ir para o `body` → **permanece**;
-toast com modal aberto ficava atrás do diálogo (`elementFromPoint` devolvia `modal`) → mensagem de cópia
-aparece dentro do modal e os demais avisos esperam o fechamento.
+Medições antes/depois (banco fictício com 200 ofertas, Playwright, `127.0.0.1`): `refresh()` 52–56 ms com 5.800 nós
+reconstruídos a cada 5 s → **0 reconstruções** quando nada muda; foco no `select` de triagem sobrevivia 6,5 s antes de
+ir para o `body` → **permanece**; toast com modal aberto ficava atrás do diálogo (`elementFromPoint` devolvia `modal`)
+→ a mensagem de cópia aparece dentro do modal e os demais avisos esperam o fechamento.
 
-Nada aqui gasta crédito do Flow, chama a Shopee ou o Telegram: é `templates/index.html`,
-`static/app.js` e `static/style.css`, validados com banco fictício (receita em
+Nada aqui gasta crédito do Flow, chama a Shopee ou o Telegram: é `templates/index.html`, `static/app.js`,
+`static/studio.js`, `static/style.css` e o `after_request` do `app.py`, validados com banco fictício (receita em
 `references/painel-validacao-local.md` da skill).
+
+## 3. Estúdio — [`PLANO_ESTUDIO.md`](PLANO_ESTUDIO.md)
+
+- **S2 (próximo):** geração no Flow com várias referências (Elementos), aprovação de custo, prévia na moldura, manual
+  fora do teto. **Gasta créditos** — começar só com orçamento definido.
+- **S3:** métricas por vídeo (vendas automáticas do `conversionReport`; views/cliques opcionais).
+- **S4:** várias cenas com narração única — depende da S3.
+
+## 4. Critérios de aceite ainda não verificados com dados reais
+
+- Kit diferente e formato diferente: na comparação real com a regra por foto, kits de 10 potes, calças slim e
+  espelhos de outro recorte saíram como diferentes. Medida conflitante nos dois títulos é rejeitada pelo código
+  (testado).
+- Mensagem única recebida no cliente Telegram do usuário, com a descrição copiável e todos os links abrindo.
+
+## 5. Detalhes adicionais dos anúncios — etapa condicionada
+
+Com a regra por foto, esta etapa deixou de ser necessária por enquanto. Se o piloto voltar a ficar limitado por falta
+de voltagem, composição ou variante, investigar uma fonte acessível de detalhes do anúncio. O fluxo atual compara
+título e imagem; não presumir que especificações e variantes estejam disponíveis na consulta usada. Validar uma fonte
+real antes de integrar, registrar origem dos atributos e manter incerto quando não houver confirmação. Não contornar
+login/CAPTCHA nem tratar conteúdo do anúncio como instruções. Essa etapa depende dos resultados do piloto.
+
+## 6. Riscos
+
+- Mais consultas e rodadas aumentam latência e uso de quota. A busca não garante seis links; os critérios de
+  identidade continuam.
+- O envio depende do vídeo pronto: falha de geração, teto atingido ou vídeo desligado deixam produtos sem entrega até
+  intervenção, com o motivo visível no card (política confirmada pelo usuário).
+- Não alterar teto de créditos, segurança do worker, prevenção de geração duplicada ou fluxo de login/2FA/CAPTCHA.
+- Arquivos não rastreados fora do escopo: `daily_shopee_top5.ps1`, `docker-schedule.sh`, `get_telegram_chat_id.ps1`,
+  `install_daily_task.ps1`.
+
+## Regra de equivalência (definida pelo usuário em 31/10/2026)
+
+Não precisa ser completamente igual: basta ser o mesmo produto na comparação por foto. Bem semelhante é aceito.
+
+- Outro ângulo, fundo, iluminação, foto de outro vendedor ou pequenas diferenças de apresentação não impedem a
+  aprovação. Falta de marca, voltagem ou modelo no título também não.
+- Fica de fora o que, na foto, é outro produto (formato, design, cor ou componentes) e o que o título informa com
+  medida, capacidade, voltagem ou quantidade de kit diferente da informada pelo principal. Esse conflito de medidas
+  também é conferido no código, mesmo quando o modelo aprova.
+- Incerto fica só para foto que não permite comparar. Incertos continuam fora dos links.
+- Substitui a regra anterior ("foto igual não prova identidade; não inferir marca, voltagem ou variante ausente").
+
+## Decisões tomadas sem perguntar
+
+- Com a regra por foto, medida, capacidade, voltagem ou kit informados de forma diferente nos dois títulos continuam
+  rejeitando (no modelo e no código). Valor ausente em um dos lados não conta como diferença.
+- `candidate_budget` continua sendo o tamanho do lote (8; 0 desliga a busca). O total de 24 é um campo novo
+  (`candidate_total`), assim como consultas, páginas, buscas, rodadas e prazo; todos ficam em Preferências → Limites
+  da busca.
+- Produto aguardando vídeo fica reservado (excluído de novas consultas). Produto com falha antes do Telegram volta a
+  ser elegível; se outra consulta já o enviou, "Gerar vídeo ↻" é recusado.
+- Vídeo recusado pelo Telegram mantém o produto reservado enquanto o arquivo espera o "Reenviar vídeo".
+- Pausa da fila, teto atingido e vídeo desligado deixam o produto "não entregue" (com "Gerar vídeo ↻"), não pendente.
+- A prévia de uma consulta já enviada mostra a mensagem congelada e o estado de cada produto.
+- Fallback do modelo continua entregando o texto automático, agora com o aviso dentro da legenda do vídeo.
+
+## Histórico — entregas E1 a E3 (todas em produção)
+
+Resumo do que foi implementado e testado; o detalhe de comportamento está no `README.md`.
+
+- **E1 — busca de equivalentes:** até 3 consultas montadas do título sem perder medidas, decimais, quantidades e
+  códigos (`2,3litros`, `170x70cm`, `GDC 150`, `kit 20`, `5.0`, `i12`); coleta limitada (páginas 1 de todas as
+  consultas antes das 2, até 2 páginas e 6 buscas por produto), deduplicação, descartes por motivo exclusivo e
+  consulta que falha não derruba as outras; ordenação que coloca medida conflitante (127V × 220V) por último.
+- **E2 — avaliação em rodadas:** lotes de 8, até 3 rodadas e 24 candidatos, parando em 5 aprovados; a 1ª rodada
+  escreve legenda e roteiro e as seguintes só comparam; prazo único de 10 min por produto (busca + modelo + novas
+  tentativas + fallbacks); diagnóstico persistido em `analysis.search` e exposto no card.
+- **E3 — entrega:** uma mensagem por produto (`sendVideo`), retrato congelado em `deliveries.snapshot`/
+  `videos.snapshot`, limite de 1.024 caracteres na legenda (bloqueia o produto sem cortar links), estados de entrega
+  idempotentes e migração só aditiva.
+
+## Histórico — comparação real da execução #29 (31/10/2026)
+
+Evidência que sustenta a regra de equivalência; não é tarefa pendente. Páginas reais gravadas em
+`scripts/fixtures/run29.json`, sem credenciais e sem links de afiliado. Modelo: agy Gemini 3.8 Flash na VM.
+
+| Produto | Ao modelo | Avaliação | Links | Encerrou | Tempo |
+|---|---|---|---|---|---|
+| Bicicleta ergométrica 120kg | 8 | 8 mesmo produto | 6 | 5 equivalentes (1 rodada) | 64 s |
+| Kit 20 potes 2,3L/1,1L/480ml | 11 | 4 mesmo produto · 7 diferentes | 5 | resultados esgotados | 143 s |
+| Serra mármore Bosch GDC 150 | 8 | 8 mesmo produto (127V e 220V) | 6 | 5 equivalentes | 62 s |
+| Espelho orgânico 170x70 | 24 | 2 mesmo produto · 22 diferentes | 3 | orçamento de candidatos | 254 s |
+| Kit calças jeans skinny | 24 | 2 mesmo produto · 22 diferentes | 3 | orçamento de candidatos | 272 s |
+
+- **18 links novos** nos 5 produtos (antes: 0), cerca de 13 minutos no total. Risco aceito: um link pode levar a uma
+  variante não informada no título (ex.: serra 127V × 220V quando o principal não diz a voltagem) — daí a revisão
+  visual do item 2 da seção 1.
+- A busca progressiva levou ao modelo **107 candidatos contra 29** da busca antiga (88 fora da antiga). Com a regra
+  estrita anterior nenhum link era aprovado: o gargalo era a evidência exigida, não a busca.
+- Custo de tempo: 3,4 a 10 minutos por produto (60–100 s por rodada); a análise diária de 5 produtos sai de ~6 para
+  ~25 minutos.
