@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 CONFIG = Path.home() / ".config" / "shopee-studio-worker" / "config.json"
 WORK = Path.home() / ".cache" / "shopee-studio-worker"
 IMAGE_HOSTS = ("susercontent.com", "shopee.com.br", "shopee.com", "img.shopee")

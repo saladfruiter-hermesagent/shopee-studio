@@ -481,8 +481,7 @@ def create_app(data_dir=None, testing=False):
 
     @app.post("/api/studio/<int:session_id>/scripts")
     def studio_scripts(session_id):
-        body()
-        return jsonify(studio.start(session_id, "scripts")), 202
+        return jsonify(studio.start(session_id, "scripts", body().get("style"))), 202
 
     @app.post("/api/studio/<int:session_id>/scripts/<int:index>")
     def studio_script(session_id, index):

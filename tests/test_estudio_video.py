@@ -61,13 +61,13 @@ class StudioVideoTest(unittest.TestCase):
         return {"ok": True, "result": {"message_id": 500 + len(self.sent)}}
 
     # ---------- helpers ----------
-    def connect_worker(self, version="1.3.0"):
+    def connect_worker(self, version="1.4.0"):
         self.client.post("/api/worker/claim", json=dict(worker_id="vm.video", version=version, kinds=["llm"]),
                          headers=self.worker)  # registers the worker without taking video tasks
         with self.store.db() as db:
             db.execute("UPDATE workers SET kinds=? WHERE id='vm.video'", (json.dumps(["video"]),))
 
-    def draft(self, origin="manual", photos=1):
+    def draft(self, origin="manual", photos=1, style=None):
         if origin == "manual":
             draft = self.post("/studio/manual", dict(url=SHORT)).json
         else:
@@ -78,7 +78,7 @@ class StudioVideoTest(unittest.TestCase):
             self.post(f"/studio/{sid}/photos", dict(data=base64.b64encode(JPEG).decode()))
         self.post(f"/studio/{sid}/facts", dict(text="- Pote transparente com tampa azul\n- Quatro travas"))
         self.post(f"/studio/{sid}/format", dict(format="hands_on"))
-        self.assertEqual(self.post(f"/studio/{sid}/scripts").status_code, 202)
+        self.assertEqual(self.post(f"/studio/{sid}/scripts", dict(style=style) if style else {}).status_code, 202)
         self.post(f"/studio/{sid}/scripts/1", dict(choose=True))
         return sid
 
@@ -88,7 +88,7 @@ class StudioVideoTest(unittest.TestCase):
     def claim(self):
         """Next Studio task (automatic videos of the same run are claimed and left aside)."""
         while True:
-            task = self.client.post("/api/worker/claim", json=dict(worker_id="vm.video", version="1.3.0", kinds=["video"]),
+            task = self.client.post("/api/worker/claim", json=dict(worker_id="vm.video", version="1.4.0", kinds=["video"]),
                                     headers=self.worker).json["task"]
             if task is None or task["payload"].get("studio_id"):
                 return task
@@ -316,6 +316,83 @@ class StudioVideoTest(unittest.TestCase):
         self.assertEqual(self.post(f"/studio/{other}/videos/{video_id}/send").status_code, 400)
         self.client.post("/api/logout", json={}, headers=self.headers)
         self.assertEqual(self.client.get(f"/api/studio/{sid}/videos/{video_id}").status_code, 401)
+
+    # ---------- estilo "problema": dor real, câmera, chamadas na tela, fala sem legenda ----------
+    def test_problem_style_scripts_prompt_and_payload(self):
+        self.connect_worker()
+        sid = self.draft(style="problema")
+        prompt = self.runner.calls[-1]["prompt"]
+        for text in ("PROBLEMA REAL", "CÂMERA", "\"callouts\"", "sem ele a rotina volta a", "corra"):
+            self.assertIn(text, prompt)
+        draft = self.get(sid)
+        self.assertEqual(draft["scripts_style"], "problema")
+        self.assertEqual(draft["scripts"][1]["callouts"], s1.CALLOUTS[1])
+        self.assertEqual(draft["scripts"][1]["problems"], [])
+        self.assertIn("0–3 s, problema e câmera:", draft["prompt"])
+        self.assertIn("a faixa de cima fica livre", draft["prompt"])
+        self.assertIn("Sem textos, legendas", draft["prompt"])  # the callouts are burned later, never drawn by the AI
+        self.assertEqual(self.generate(sid).status_code, 202)
+        finish = self.claim()["payload"]["finish"]
+        self.assertFalse(finish["subtitles"])
+        self.assertEqual(finish["callouts"], ["GELADEIRA BAGUNÇADA?", "TUDO NO LUGAR", "SUA COZINHA PEDE ISSO"])
+        self.assertTrue(finish["badge"] and finish["frames"])
+
+    def test_classic_style_is_unchanged(self):
+        self.connect_worker()
+        sid = self.draft()
+        draft = self.get(sid)
+        self.assertEqual(draft["scripts_style"], "classico")
+        self.assertNotIn("callouts", draft["scripts"][0])
+        self.assertIn("0–2 s, gancho:", draft["prompt"])
+        self.generate(sid)
+        finish = self.claim()["payload"]["finish"]
+        self.assertNotIn("callouts", finish)
+        self.assertNotIn("subtitles", finish)  # worker default: narration subtitles on
+        self.assertEqual(self.post(f"/studio/{sid}/scripts", dict(style="nada")).status_code, 400)
+
+    def test_callouts_are_editable_and_checked(self):
+        sid = self.draft(style="problema")
+        edited = self.post(f"/studio/{sid}/scripts/0", dict(script=dict(callouts=["Corra, só hoje", "50% OFF", "50% OFF"])))
+        self.assertEqual(edited.status_code, 200, edited.json)
+        script = edited.json["scripts"][0]
+        self.assertEqual(script["callouts"], ["Corra, só hoje", "50% OFF", "50% OFF"])
+        self.assertTrue(script["edited"])
+        problems = " | ".join(script["problems"])
+        for text in ("chamada 1: sem preço", "chamada 2: sem preço", "as 3 chamadas precisam ser diferentes"):
+            self.assertIn(text, problems)
+        self.assertEqual(self.post(f"/studio/{sid}/scripts/0", dict(script=dict(callouts=["SÓ UMA"]))).status_code, 400)
+        classic = self.draft()
+        refused = self.post(f"/studio/{classic}/scripts/0", dict(script=dict(callouts=["A", "B", "C"])))
+        self.assertEqual(refused.status_code, 400)
+
+    def test_callout_rules(self):
+        import studio as studio_module
+        name = "Kit 15 Telhas PVC 2,42x0,88m"
+        self.assertEqual(studio_module.callout_issues(["CHEGA DE GOTEIRA", "15 TELHAS NA HORA", "NÃO FIQUE SEM"], name), [])
+        cases = {("CHEGA DE GOTEIRA", "3X MAIS FORTE", "NÃO FIQUE SEM"): "número que não está no nome",
+                 ("CHEGA DE GOTEIRA 😩", "RESOLVE", "NÃO FIQUE SEM"): "sem emojis",
+                 ("CHEGA DE GOTEIRA", "ÚLTIMAS UNIDADES", "NÃO FIQUE SEM"): "urgência inventada",
+                 ("X" * 27, "RESOLVE", "NÃO FIQUE SEM"): "de 3 a 26 caracteres",
+                 ("CHEGA DE GOTEIRA", "RESOLVE", "TOQUE NO PRODUTO MARCADO"): "o botão do fim já diz"}
+        for callouts, expected in cases.items():
+            self.assertIn(expected, " ".join(studio_module.callout_issues(list(callouts), name)), callouts)
+        self.assertIn("exatamente 3", studio_module.callout_issues(["A", "B"], name)[0])
+
+    def test_worker_burns_styled_callouts_without_speech_subtitles(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))
+        import subtitles
+        text = subtitles.ass([], 1080, 1920, dict(duration=10.0, rating="4,9", sold="12 vendidos"),
+                             ["CHEGA DE {GOTEIRA}", "RESOLVE NA HORA", "NÃO FIQUE SEM"], 10.0)
+        events = [line for line in text.splitlines() if line.startswith("Dialogue: 2,")]
+        self.assertEqual([line.split(",")[1:4] for line in events],
+                         [["0:00:00.50", "0:00:03.00", "Chamada1"], ["0:00:03.30", "0:00:06.00", "Chamada2"],
+                          ["0:00:06.30", "0:00:10.00", "Chamada3"]])
+        self.assertIn("CHEGA DE (GOTEIRA)", events[0])  # ASS override braces never reach the renderer
+        self.assertIn("\\fscx115", events[0])           # pop-in
+        self.assertGreater(events[2].count("\\fscx108"), 3)  # the last one keeps pulsing
+        self.assertEqual(sum(line.startswith("Style: Chamada") for line in text.splitlines()), 3)
+        self.assertIn("CONFIRA NO PRODUTO MARCADO", text)  # the purchase badge stays
+        self.assertNotIn("Chamada", subtitles.ass([], 1080, 1920))
 
     def test_fidelity_prompt_keeps_the_listing_wording(self):
         self.assertIn("A imagem P é a foto do anúncio.", fidelity_prompt("Pote", 3))

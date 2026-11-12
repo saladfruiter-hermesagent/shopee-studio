@@ -37,6 +37,9 @@ SCRIPTS = [
 ]
 SCRIPTS_OUTPUT = dict(description="Mantém os alimentos frescos e a geladeira organizada",
                       hashtags=["#PoteHermetico", "#CozinhaOrganizada"], scripts=SCRIPTS)
+CALLOUTS = [["CHEGA DE POTE VAZANDO", "FECHA COM UM CLIQUE", "NÃO FIQUE SEM O SEU"],
+            ["GELADEIRA BAGUNÇADA?", "TUDO NO LUGAR", "SUA COZINHA PEDE ISSO"],
+            ["BOLSA MOLHADA DE NOVO?", "NADA VAZA", "SEM ELE NÃO DÁ"]]
 FACTS_OUTPUT = dict(facts=["Pote transparente com tampa azul", "Quatro travas laterais na tampa",
                            "Cabe na palma da mão", "Kit de potes (nome)"], avoid=["texto da embalagem"])
 
@@ -51,6 +54,8 @@ class StudioRunner:
         if self.error:
             raise self.error
         output = SCRIPTS_OUTPUT if "scripts" in schema["properties"] else FACTS_OUTPUT
+        if "callouts" in schema["properties"].get("scripts", {}).get("items", {}).get("properties", {}):
+            output = dict(output, scripts=[dict(script, callouts=CALLOUTS[i]) for i, script in enumerate(output["scripts"])])
         assert check(output) == [], check(output)
         return json.loads(json.dumps(output)), "Fake", ["Fake: ok"]
 

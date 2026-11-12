@@ -2,8 +2,10 @@
 // Estúdio (PLANO_ESTUDIO.md, S1 e S2): rascunho assistido do vídeo — fotos, ficha visual, formato, roteiros,
 // geração no Flow com aprovação do custo, prévia na moldura da Shopee Vídeo e envio ao Telegram só depois da aprovação.
 // Usa $, esc, api, post, money, date, toast e view de app.js (scripts clássicos compartilham o escopo global).
-let studioData=null,studioDraft=null,studioTab='day',studioPoll=null;
+let studioData=null,studioDraft=null,studioTab='day',studioPoll=null,studioStyle='problema';
 const studioFields=[['hook','Gancho · 0–2 s'],['demo','Demonstração · 2–6 s'],['benefit','Prova · 6–8 s'],['cta','Chamada · 8–10 s']];
+const problemFields=[['hook','Problema real + câmera · 0–3 s'],['demo','O produto resolve · 3–6 s'],['benefit','Rotina melhor · 6–8 s'],['cta','Toque no produto · 8–10 s']];
+function styleLabel(key){const st=(studioData?.styles||[]).find(x=>x.key===key);return st?st.label:key;}
 const deliveryText={pending:'aguardando',sending:'enviando',sent:'entregue',failed:'não entregue',unknown:'não confirmado',blocked:'bloqueado',refused:'recusado'};
 function hm(iso){return iso?new Date(iso).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';}
 
@@ -41,10 +43,10 @@ function renderStudioLists(){
  $('#studio-manual-list').innerHTML=d.manual.map(i=>studioCard(Object.assign({},i,{note:'Criado em '+hm(i.created)+(i.video?' · vídeo: '+i.video.label:(i.scripts?' · '+i.scripts+' roteiros':'')+(i.chosen!==null?' · roteiro escolhido':''))}),
   '<button class="secondary" data-studio-open="'+i.id+'">Abrir</button>')).join('')||'<p class="muted">Cole o link de um produto para começar.</p>';
 }
-async function studioOpen(id){try{studioDraft=await api('/studio/'+id);showEditor();}catch(e){toast(e.message);}}
+async function studioOpen(id){try{studioDraft=await api('/studio/'+id);studioStyle=studioDraft.scripts_style||'problema';showEditor();}catch(e){toast(e.message);}}
 async function openStudioDay(runId,key){
  view('studio');
- try{studioDraft=await post('/studio/day',{run_id:runId,key});showEditor();}catch(e){toast(e.message);studioLoad();}
+ try{studioDraft=await post('/studio/day',{run_id:runId,key});studioStyle=studioDraft.scripts_style||'problema';showEditor();}catch(e){toast(e.message);studioLoad();}
 }
 async function showEditor(){if(!studioData)await studioLoad();$('#studio-home').hidden=true;$('#studio-editor').hidden=false;renderEditor();watchJob();$('#studio-editor').scrollIntoView();}
 function closeEditor(){studioDraft=null;clearTimeout(studioPoll);clearTimeout(videoPoll);$('#studio-editor').hidden=true;$('#studio-home').hidden=false;studioLoad();}
@@ -80,12 +82,16 @@ function renderEditor(){
  const format='<article class="panel"><p class="eyebrow">3 · FORMATO</p><h3>Como a câmera filma e quem aparece</h3><p class="hint">A abordagem (problema e solução, antes e depois, teste…) vem nos roteiros.</p><div class="studio-formats">'+
   studioData.formats.map(f=>'<label class="studio-format'+(s.format===f.key?' active':'')+'" title="'+esc(f.text)+'"><input type="radio" name="studio-format" value="'+esc(f.key)+'" '+(s.format===f.key?'checked':'')+'><b>'+(s.format===f.key?'✓ ':'')+esc(f.label)+'</b><small>'+esc(f.text.split(' — ')[1]||'')+'</small><i>'+(f.person?'com pessoa':'só mãos')+' · '+(f.speaks?'fala para a câmera':'voz em off')+'</i></label>').join('')+'</div></article>';
  const changed=s.scripts.length&&s.scripts_format&&s.scripts_format!==s.format;
- const scripts='<article class="panel"><p class="eyebrow">4 · ROTEIROS</p><h3>Três abordagens diferentes</h3><p class="hint">Cada um com gancho nos 2 primeiros segundos, demonstração, prova e chamada para o produto marcado. Edite à vontade e escolha um.</p>'+
+ const problem=s.scripts_style==='problema';
+ const styles='<div class="studio-styles" role="radiogroup" aria-label="Estilo do roteiro">'+(studioData.styles||[]).map(st=>'<label class="studio-format'+(studioStyle===st.key?' active':'')+'"><input type="radio" name="studio-style" value="'+esc(st.key)+'" '+(studioStyle===st.key?'checked':'')+'><b>'+(studioStyle===st.key?'✓ ':'')+esc(st.label)+'</b><small>'+esc(st.text)+'</small></label>').join('')+'</div>';
+ const scripts='<article class="panel"><p class="eyebrow">4 · ROTEIROS</p><h3>Três abordagens diferentes</h3><p class="hint">Escolha o estilo, gere 3 roteiros, edite à vontade e escolha um.</p>'+styles+
   (changed?'<p class="warning">Os roteiros abaixo foram feitos no formato anterior. Gere de novo para usar o formato escolhido.</p>':'')+
+  (s.scripts.length&&s.scripts_style&&s.scripts_style!==studioStyle?'<p class="warning">Os roteiros abaixo são do estilo “'+esc(styleLabel(s.scripts_style))+'”. Gere de novo para usar o estilo escolhido.</p>':'')+
   '<button type="button" class="secondary" data-studio-run="scripts" '+(running||!s.format?'disabled':'')+'>'+(s.scripts.length?'Gerar outros 3 roteiros':'Gerar 3 roteiros')+'</button>'+(s.format?'':'<span class="hint"> Escolha o formato primeiro.</span>')+
   '<div class="studio-scripts">'+s.scripts.map((sc,i)=>'<div class="studio-script'+(s.chosen===i?' chosen':'')+'" data-index="'+i+'"><div class="studio-script-head"><b>'+(i+1)+'</b><input data-sf="angle" value="'+esc(sc.angle)+'" maxlength="60" aria-label="Abordagem do roteiro '+(i+1)+'">'+(sc.edited?'<span class="content-pill">editado</span>':'')+'</div>'+
-   studioFields.map(([k,l])=>'<label>'+l+'<textarea data-sf="'+k+'" rows="2" maxlength="220">'+esc(sc[k])+'</textarea></label>').join('')+
-   '<label>Narração · '+sc.words+' palavras (18–25)<textarea data-sf="narration" rows="3" maxlength="300">'+esc(sc.narration)+'</textarea></label>'+
+   (problem?problemFields:studioFields).map(([k,l])=>'<label>'+l+'<textarea data-sf="'+k+'" rows="2" maxlength="220">'+esc(sc[k])+'</textarea></label>').join('')+
+   (problem?'<fieldset class="studio-callouts"><legend>Chamadas na tela</legend>'+(studioData.callout_roles||[]).map((r,n)=>'<label class="callout-'+(n+1)+'">'+esc(r)+'<input data-callout="'+n+'" maxlength="26" value="'+esc((sc.callouts||[])[n]||'')+'"></label>').join('')+'</fieldset>':'')+
+   '<label>Narração · '+sc.words+' palavras (18–25)'+(problem?' · falada, sem legenda na tela':'')+'<textarea data-sf="narration" rows="3" maxlength="300">'+esc(sc.narration)+'</textarea></label>'+
    (sc.problems.length?'<ul class="studio-problems">'+sc.problems.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'<p class="studio-ok">✓ Dentro das regras</p>')+
    '<div class="studio-actions"><button type="button" class="secondary" data-script-save="'+i+'">Salvar edição</button><button type="button" class="'+(s.chosen===i?'primary':'secondary')+'" data-script-choose="'+i+'">'+(s.chosen===i?'✓ Roteiro escolhido':'Usar este roteiro')+'</button></div></div>').join('')+'</div>'+
   (s.caption?'<div class="studio-caption"><p class="eyebrow">LEGENDA DO TELEGRAM · '+s.caption.length+'/150</p><label>Descrição<textarea id="studio-desc" rows="2" maxlength="300">'+esc(s.caption.description)+'</textarea></label><label>Hashtags (separadas por espaço)<input id="studio-tags" value="'+esc(s.caption.hashtags.join(' '))+'"></label>'+
@@ -122,7 +128,7 @@ function shopeeFrame(v){
   '<div class="sv-product">'+(p.image?'<img src="'+esc(p.image)+'" alt="" width="34" height="34" referrerpolicy="no-referrer">':'')+'<span><b>'+esc(p.name)+'</b><small>'+money(p.price)+'</small></span></div></div></div>';
 }
 function videoFacts(v){const m=v.meta||{},f=m.fidelity;
- return '<ul class="studio-video-facts">'+(m.duration?'<li>'+m.width+'×'+m.height+' · '+Number(m.duration).toFixed(1)+' s · '+(m.subtitles||0)+' legendas</li>':'')+
+ return '<ul class="studio-video-facts">'+(m.duration?'<li>'+m.width+'×'+m.height+' · '+Number(m.duration).toFixed(1)+' s · '+(m.callouts?m.callouts+' chamadas na tela · fala sem legenda':(m.subtitles||0)+' legendas')+'</li>':'')+
   (f?(f.score!=null?'<li class="'+(f.score<7?'bad':'ok')+'">Fidelidade ao produto: '+f.score+'/10 · '+esc(f.reason)+'</li>':'<li>Fidelidade não avaliada ('+esc(f.error)+')</li>'):(v.state==='review'?'<li>Conferindo a fidelidade ao produto…</li>':''))+
   '<li>'+v.credits+' créditos · gerado em '+hm(v.updated||v.created)+'</li></ul>';
 }
@@ -188,7 +194,7 @@ async function studioVideoAct(path,message,question){
  try{studioDraft=await post('/studio/'+studioDraft.id+'/videos/'+path);toast(message(studioDraft));}catch(e){toast(e.message);}
  renderVideoPanel();
 }
-function readScript(card){const r={};card.querySelectorAll('[data-sf]').forEach(i=>r[i.dataset.sf]=i.value.trim());return r;}
+function readScript(card){const r={};card.querySelectorAll('[data-sf]').forEach(i=>r[i.dataset.sf]=i.value.trim());const c=[...card.querySelectorAll('[data-callout]')];if(c.length)r.callouts=c.map(i=>i.value.trim());return r;}
 async function studioAct(promise,message){try{studioDraft=await promise;renderEditor();watchJob();if(message)toast(message);}catch(e){toast(e.message);}}
 
 function readAsDataUrl(blob){return new Promise((ok,bad)=>{const f=new FileReader();f.onload=()=>ok(f.result);f.onerror=()=>bad(Error('Não consegui ler a foto.'));f.readAsDataURL(blob);});}
@@ -222,6 +228,7 @@ $('#offers').addEventListener('click',e=>{const b=e.target.closest('[data-studio
 $('#studio-editor').addEventListener('change',e=>{
  if(e.target.id==='studio-files'&&e.target.files.length)uploadPhotos(e.target.files);
  else if(e.target.name==='studio-format')studioAct(post('/studio/'+studioDraft.id+'/format',{format:e.target.value}));
+ else if(e.target.name==='studio-style'){studioStyle=e.target.value;renderEditor();}
 });
 $('#studio-editor').addEventListener('click',e=>{
  const t=e.target.closest('button');if(!t||!studioDraft)return;const id=studioDraft.id,d=t.dataset;
@@ -229,7 +236,7 @@ $('#studio-editor').addEventListener('click',e=>{
  else if(d.photoMain)studioAct(post('/studio/'+id+'/photos/'+d.photoMain+'/main'));
  else if(d.photoRemove){if(confirm('Remover esta foto?'))studioAct(post('/studio/'+id+'/photos/'+d.photoRemove+'/remove'));}
  else if(d.studioRun){if(d.studioRun==='facts'&&studioDraft.facts&&!confirm('A ficha atual será substituída pela nova descrição. Continuar?'))return;
-  studioAct(post('/studio/'+id+'/'+d.studioRun),'Pedido enviado ao modelo.');}
+  studioAct(post('/studio/'+id+'/'+d.studioRun,d.studioRun==='scripts'?{style:studioStyle}:{}),'Pedido enviado ao modelo.');}
  else if('studioFactsSave' in d)studioAct(post('/studio/'+id+'/facts',{text:$('#studio-facts').value}),'Ficha salva.');
  else if(d.scriptSave)studioAct(post('/studio/'+id+'/scripts/'+d.scriptSave,{script:readScript(t.closest('.studio-script'))}),'Roteiro salvo.');
  else if(d.scriptChoose)studioAct(post('/studio/'+id+'/scripts/'+d.scriptChoose,{script:readScript(t.closest('.studio-script')),choose:true}),'Roteiro escolhido.');

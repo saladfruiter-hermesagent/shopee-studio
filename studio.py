@@ -18,15 +18,15 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from analysis import DATA_RULES
-from content import (CAPTION_LIMIT, CLOSING, MODERN_NARRATION_WORDS, SCRIPT_FIELD_LIMIT, VIDEO_SECONDS, CaptionTooLong,
-                     caption_text, copy_problems, modern_script_problems, opening, script_problems, text_length,
-                     video_caption)
+from content import (CAPTION_LIMIT, CLOSING, FORBIDDEN_CLAIMS, MODERN_NARRATION_WORDS, SCRIPT_FIELD_LIMIT, VIDEO_SECONDS,
+                     CaptionTooLong, _digits, _folded, caption_text, copy_problems, has_emoji, modern_script_problems,
+                     opening, script_problems, spoken_numbers, text_length, video_caption)
 from video import ACTIVE, Videos, badge
 
 MAX_PHOTOS = 6                 # fotos do usuário por produto, além da foto da API
 MAX_PHOTO_BYTES = 2_500_000    # depois de reduzida no navegador (~1280 px)
 MAX_FLOW_REFS = 4              # referências anexadas no Flow (S0: 4 entraram em Elementos pelo mesmo custo)
-WORKER_MIN_VERSION = (1, 3, 0)  # worker que anexa várias fotos e baixa as do painel
+WORKER_MIN_VERSION = (1, 4, 0)  # anexa várias fotos, baixa as do painel e aplica as chamadas na tela
 FACTS_LIMIT = 1500
 NARRATION_LIMIT = 300
 ANGLE_LIMIT = 60
@@ -66,6 +66,18 @@ NARRATIVE_ANGLES = ("problema e solução", "antes e depois", "teste ou desafio"
                     "unboxing", "curiosidade de como funciona")
 SCRIPT_FIELDS = ("hook", "demo", "benefit", "cta", "narration")
 PHOTO_ID = re.compile(r"u\d{1,3}")
+# Estilo do roteiro. "problema" (testes a partir de 12/11): dor real do dia a dia, câmera que chama atenção, 3 chamadas
+# escritas na tela pelo worker e a fala SEM legenda. "classico": o da S1, com a legenda da narração.
+SCRIPT_STYLES = {
+    "problema": dict(label="Problema real + chamadas na tela",
+                     text="Começa por uma dor real do dia a dia, a câmera prende o olhar, o produto resolve e 3 chamadas "
+                          "grandes aparecem na tela. A fala fica sem legenda."),
+    "classico": dict(label="Clássico",
+                     text="Gancho, demonstração, prova e chamada, com a legenda da narração."),
+}
+CALLOUTS = 3
+CALLOUT_LIMIT = 26
+CALLOUT_ROLES = ("a dor · 0–3 s", "a virada · 3–6 s", "não perca · 6–10 s")
 
 FACTS_SCHEMA = {"type": "object", "properties": {
     "facts": {"type": "array", "items": {"type": "string"}},
@@ -75,6 +87,11 @@ SCRIPT_SCHEMA = {"type": "object", "properties": {k: {"type": "string"} for k in
 SCRIPTS_SCHEMA = {"type": "object", "properties": {
     "description": {"type": "string"}, "hashtags": {"type": "array", "items": {"type": "string"}},
     "scripts": {"type": "array", "items": SCRIPT_SCHEMA}}, "required": ["description", "hashtags", "scripts"]}
+PROBLEM_SCRIPT_SCHEMA = {"type": "object", "properties": dict(SCRIPT_SCHEMA["properties"],
+                                                              callouts={"type": "array", "items": {"type": "string"}}),
+                         "required": ["angle", *SCRIPT_FIELDS, "callouts"]}
+PROBLEM_SCRIPTS_SCHEMA = dict(SCRIPTS_SCHEMA, properties=dict(SCRIPTS_SCHEMA["properties"],
+                                                              scripts={"type": "array", "items": PROBLEM_SCRIPT_SCHEMA}))
 
 
 def _num(value, default=0.0):
@@ -268,17 +285,110 @@ sem emojis, sem preço, desconto, frete ou urgência; "hashtags" = 2 ou 3 (produ
 Responda somente com o JSON do schema."""
 
 
-def script_issues(script, name, video_format, banned=()):
+def problem_scripts_prompt(product, facts, video_format, banned, names):
+    """Estilo "problema": anúncio curtíssimo que parte de uma dor real, câmera que prende o olhar, 3 chamadas na tela."""
+    low, high = MODERN_NARRATION_WORDS
+    person, speaks = video_format in PERSON_FORMATS, video_format in SPEAKING_FORMATS
+    banned_text = ", ".join(f'"{o}"' for o in banned) or "nenhuma"
+    people = ("Aparece uma pessoa. Descreva-a uma vez no \"hook\" (idade aproximada, cabelo, roupa simples, onde está) "
+              "para o vídeo manter a mesma pessoa; público brasileiro, cena do dia a dia, sem cara de comercial."
+              if person else
+              "Só mãos em cena (visão em primeira pessoa ou close): nenhum rosto, sorriso ou pessoa de frente para a câmera.")
+    voice = ("A fala é da pessoa em cena, olhando para a câmera, em tom de conversa (como quem avisa uma amiga)."
+             if speaks else "A fala é uma voz em off, natural e com energia.")
+    return f"""Você cria anúncios curtíssimos ({VIDEO_SECONDS} s, vertical 9:16) para a Shopee Vídeo. Quem assiste está
+rolando o feed e decide em 1 segundo se para. O vídeo é feito por uma IA que recebe as fotos do produto como referência
+({", ".join(names)}).
+{DATA_RULES}
+
+{_data(product)}
+
+FICHA DO PRODUTO (conferida pelo afiliado; é a única fonte de atributos — não cite nada que não esteja nela, no nome
+ou nas fotos):
+<ficha>
+{facts.strip() or "(sem ficha: use só o nome do anúncio e as fotos)"}
+</ficha>
+
+FORMATO OBRIGATÓRIO (como a câmera filma e quem aparece): {STUDIO_FORMATS[video_format]}
+
+ESTRATÉGIA (vale para os 3 roteiros):
+1. Parta de um PROBLEMA REAL do dia a dia que este produto resolve: algo que a pessoa vive e reconhece na hora (perda de
+   tempo, bagunça, desconforto, esforço, gasto, constrangimento). Tem de ser plausível pela ficha: não invente função.
+2. A CÂMERA chama a atenção no primeiro segundo com um movimento intencional: aproximação rápida até quase encostar na
+   lente, chicote (whip pan), câmera que cai na cena, o produto entrando na frente da lente ou mudança brusca de foco.
+   Escreva o movimento na cena.
+3. A virada: o produto entra e resolve o problema na frente da câmera, de forma visível.
+4. O contraste: com o produto o dia a dia fica claramente melhor; quem assiste tem de sentir que sem ele a rotina volta a
+   ser pior e que esta é uma oportunidade que não dá para deixar passar.
+Cada um dos 3 roteiros ataca um problema real DIFERENTE (ou um momento diferente do mesmo problema).
+
+Cada roteiro tem:
+- "angle": o problema real em até 6 palavras.
+- "hook" (0–3 s): o problema acontecendo + o movimento de câmera que prende o olhar.
+- "demo" (3–6 s): o produto entrando e resolvendo, com uma ação concreta e observável.
+- "benefit" (6–8 s): o resultado visível — a rotina melhor.
+- "cta" (8–10 s): gesto que convida a tocar no produto marcado (aproximar o produto da lente, apontar para baixo).
+  Cenas filmáveis, em português, até {SCRIPT_FIELD_LIMIT} caracteres cada; sem textos, setas ou elementos gráficos na
+  cena (as chamadas abaixo são aplicadas depois, por cima do vídeo).
+- "callouts": exatamente 3 chamadas que aparecem ESCRITAS na tela, grandes e estilizadas, de 3 a {CALLOUT_LIMIT}
+  caracteres cada, sem emojis, ditas como um aviso direto a quem assiste:
+  1 (0–3 s) dá nome à dor (ex.: "CHEGA DE CABO EMBOLADO");
+  2 (3–6 s) a virada, a solução que está ali (ex.: "RESOLVE EM SEGUNDOS");
+  3 (6–10 s) o não-perca: lembra que sem ele o dia a dia volta a ser pior (ex.: "NÃO FIQUE SEM O SEU",
+  "SUA ROTINA PEDE ISSO"). Não escreva "produto marcado" nela: o botão do fim do vídeo já diz isso.
+  A urgência vem do problema, nunca de escassez ou preço: proibido preço, desconto, porcentagem, frete, estoque,
+  cupom, "corra", "só hoje", "últimas unidades" e qualquer número que não esteja no nome do anúncio.
+- "narration": a fala completa, PT-BR natural, de {low} a {high} palavras (não vai legenda na tela). A primeira frase
+  é a dor (pergunta ou afirmação que a pessoa reconhece); depois vem a solução; a última frase lembra que sem ele o
+  dia fica pior e cita "{CLOSING}" (ex.: "Não volte para o sufoco: toque no {CLOSING}."). Não comece com "Olha" nem
+  "Gente", nem com estas aberturas já usadas: {banned_text}. Os 3 roteiros começam de jeitos diferentes. Todo número
+  falado tem de aparecer no nome do anúncio. Sem preço, desconto, frete, estoque ou urgência inventada.
+  {voice}
+- {people}
+
+LEGENDA DO TELEGRAM (uma só, vale para qualquer roteiro): "description" = uma frase com o problema que o produto
+resolve e o contexto de uso, sem emojis, sem preço, desconto, frete ou urgência; "hashtags" = 2 ou 3 (produto,
+uso/contexto). Proibido #Shopee, #Achadinhos, #Viral, #Fyp. description + espaço + hashtags com no máximo
+{CAPTION_LIMIT} caracteres.
+Responda somente com o JSON do schema."""
+
+
+def callout_issues(callouts, name):
+    """Chamadas escritas na tela (estilo "problema"): curtas, diferentes, sem escassez/preço nem número inventado."""
+    if not isinstance(callouts, list) or len(callouts) != CALLOUTS or not all(isinstance(c, str) for c in callouts):
+        return [f"chamadas: escreva exatamente {CALLOUTS}"]
+    problems = []
+    for index, text in enumerate(callouts, 1):
+        text = text.strip()
+        if not 3 <= len(text) <= CALLOUT_LIMIT:
+            problems.append(f"chamada {index}: de 3 a {CALLOUT_LIMIT} caracteres")
+        if has_emoji(text):
+            problems.append(f"chamada {index}: sem emojis")
+        if FORBIDDEN_CLAIMS.search(text):
+            problems.append(f"chamada {index}: sem preço, desconto, frete, estoque ou urgência inventada")
+        invented = spoken_numbers(text) - _digits(_folded(name))
+        if invented:
+            problems.append(f"chamada {index}: número que não está no nome do anúncio ({', '.join(sorted(invented))})")
+    if CLOSING in _folded(callouts[-1]):
+        problems.append(f"chamada 3: o botão do fim já diz \"{CLOSING}\"; use o não-perca (ex.: NÃO FIQUE SEM O SEU)")
+    if len({_folded(c).strip() for c in callouts}) < CALLOUTS:
+        problems.append("as 3 chamadas precisam ser diferentes")
+    return problems
+
+
+def script_issues(script, name, video_format, banned=(), style="classico"):
     """Problems of one script under the Studio rules (the same as the Modern mode, faces allowed in 'provador')."""
     problems = script_problems(script)
     problems += modern_script_problems(script, name, banned, hands_only=video_format not in PERSON_FORMATS)
     angle = script.get("angle")
     if not isinstance(angle, str) or not angle.strip() or len(angle) > ANGLE_LIMIT:
         problems.append(f"angle vazio ou com mais de {ANGLE_LIMIT} caracteres")
+    if style == "problema":
+        problems += callout_issues(script.get("callouts"), name)
     return problems
 
 
-def scripts_check(name, video_format, banned):
+def scripts_check(name, video_format, banned, style="classico"):
     def check(output):
         if not isinstance(output, dict):
             return ["resposta não é um objeto JSON"]
@@ -287,7 +397,7 @@ def scripts_check(name, video_format, banned):
         if not isinstance(scripts, list) or len(scripts) != 3 or not all(isinstance(s, dict) for s in scripts):
             return problems + ["scripts deve ter exatamente 3 roteiros"]
         for index, script in enumerate(scripts, 1):
-            problems += [f"roteiro {index}: {p}" for p in script_issues(script, name, video_format, banned)]
+            problems += [f"roteiro {index}: {p}" for p in script_issues(script, name, video_format, banned, style)]
         openings = [opening(s.get("narration") or "") for s in scripts]
         if len(set(openings)) < len(openings):
             problems.append("os 3 roteiros precisam começar a narração de jeitos diferentes")
@@ -305,8 +415,9 @@ def _bullets(lines, limit):
     return text
 
 
-def studio_prompt(script, video_format, facts, references):
-    """Flow prompt of a Studio draft (shown in S1, sent in S2)."""
+def studio_prompt(script, video_format, facts, references, style="classico"):
+    """Flow prompt of a Studio draft. Style "problema": problem → solution → better routine, attention-grabbing camera,
+    and the action kept away from the top band, where the worker burns the callouts."""
     spec = STUDIO_FORMAT_SPECS.get(video_format) or STUDIO_FORMAT_SPECS["hands_on"]
     facts_part, _, avoid_part = facts.partition("Cuidados para a IA de vídeo:")
     facts_line = _bullets([l for l in facts_part.splitlines() if l.startswith("- ")], 700)
@@ -322,8 +433,16 @@ def studio_prompt(script, video_format, facts, references):
     if avoid_line:
         lines.append(f"Cuidados: {avoid_line}")
     speech = script["narration"].strip()
-    lines += [f"0–2 s, gancho: {script['hook'].strip()}", f"2–6 s, demonstração: {script['demo'].strip()}",
-              f"6–8 s, prova: {script['benefit'].strip()}", f"8–10 s, chamada: {script['cta'].strip()}",
+    if style == "problema":
+        lines += ["Anúncio curto: um problema real do dia a dia, o produto resolvendo na frente da câmera e a rotina "
+                  "claramente melhor no final. Câmera com movimento intencional e energia desde o primeiro segundo.",
+                  "Mantenha o produto e a ação no centro e na metade de baixo do quadro; a faixa de cima fica livre.",
+                  f"0–3 s, problema e câmera: {script['hook'].strip()}", f"3–6 s, o produto resolve: {script['demo'].strip()}",
+                  f"6–8 s, resultado: {script['benefit'].strip()}", f"8–10 s, chamada: {script['cta'].strip()}"]
+    else:
+        lines += [f"0–2 s, gancho: {script['hook'].strip()}", f"2–6 s, demonstração: {script['demo'].strip()}",
+                  f"6–8 s, prova: {script['benefit'].strip()}", f"8–10 s, chamada: {script['cta'].strip()}"]
+    lines += [
               (f"A pessoa fala olhando para a câmera, em português do Brasil, tom de conversa, com a boca sincronizada: "
                f"\"{speech}\"" if spec["speaks"] else f"Narração em off em português do Brasil, voz natural e animada: \"{speech}\""),
               "Sem textos, legendas, logotipos ou marcas d'água na imagem. Sem preços, descontos ou promessas."]
@@ -425,6 +544,8 @@ class Studio:
                 "SELECT * FROM studio WHERE origin='manual' ORDER BY id DESC LIMIT 20")]
         return dict(slots=settings["studio_slots"], cutoff=settings["studio_cutoff"], today=self.today(), manual=manual,
                     cost=settings["video_cost"], manual_credits=self.engine.videos.manual_credits(),
+                    styles=[dict(key=k, label=v["label"], text=v["text"]) for k, v in SCRIPT_STYLES.items()],
+                    callout_roles=list(CALLOUT_ROLES),
                     formats=[dict(key=k, label=f["label"], text=f["text"], person=f["person"], speaks=f["speaks"])
                              for k, f in STUDIO_FORMAT_SPECS.items()])
 
@@ -613,10 +734,13 @@ class Studio:
         self._save(session_id, format=video_format)
         return self.get(session_id)
 
-    def start(self, session_id, kind):
+    def start(self, session_id, kind, style=None):
         """Model call in the background (agy can take minutes); the page polls the draft."""
         if kind not in ("facts", "scripts"):
             raise ValueError("Ação inválida.")
+        style = style or "classico"
+        if style not in SCRIPT_STYLES:
+            raise ValueError("Estilo de roteiro desconhecido.")
         with self.lock:
             row = self._row(session_id)
             job = json.loads(row["job"] or "null") or {}
@@ -628,12 +752,12 @@ class Studio:
                 raise ValueError("Escolha o formato antes de pedir os roteiros.")
             label = "Descrevendo as fotos…" if kind == "facts" else "Escrevendo 3 roteiros…"
             self._save(session_id, job=dict(kind=kind, status="running", message=label, started=time.time()))
-        self.start_thread(lambda: self._work(session_id, kind))
+        self.start_thread(lambda: self._work(session_id, kind, style))
         return self.get(session_id)
 
-    def _work(self, session_id, kind):
+    def _work(self, session_id, kind, style="classico"):
         try:
-            message = self._facts(session_id) if kind == "facts" else self._scripts(session_id)
+            message = self._facts(session_id) if kind == "facts" else self._scripts(session_id, style)
             status = "ok"
         except Exception as error:  # ModelError or anything else: the draft stays, the job says why.
             message, status = "Falhou: " + str(error)[:400], "failed"
@@ -652,19 +776,28 @@ class Studio:
         self._save(session_id, facts=facts_text(output))
         return f"ficha visual escrita com {len(images)} foto(s) ({provider})."
 
-    def _scripts(self, session_id):
+    def _scripts(self, session_id, style="classico"):
         row = self._row(session_id)
         product, images, video_format = json.loads(row["product"]), self.images(row), row["format"]
         banned = self.store.recent_creative(8)["openings"][:8]
+        problem = style == "problema"
+        prompt = problem_scripts_prompt if problem else scripts_prompt
         output, provider, _ = self.engine.runner.run(
-            scripts_prompt(product, row["facts"] or "", video_format, banned, [i["name"] for i in images]),
-            SCRIPTS_SCHEMA, images, scripts_check(product["name"], video_format, banned),
+            prompt(product, row["facts"] or "", video_format, banned, [i["name"] for i in images]),
+            PROBLEM_SCRIPTS_SCHEMA if problem else SCRIPTS_SCHEMA, images,
+            scripts_check(product["name"], video_format, banned, style),
             log=lambda m: self.store.log("info", "Modelo: " + m), deadline=time.time() + SCRIPTS_SECONDS)
-        items = [dict({k: s[k].strip() for k in ("angle", *SCRIPT_FIELDS)}, edited=False) for s in output["scripts"]]
+        items = []
+        for script in output["scripts"]:
+            item = dict({k: script[k].strip() for k in ("angle", *SCRIPT_FIELDS)}, edited=False)
+            if problem:
+                item["callouts"] = [c.strip() for c in script["callouts"]]
+            items.append(item)
         caption = dict(description=output["description"].strip(), hashtags=[t.strip() for t in output["hashtags"]])
         self._save(session_id, scripts=dict(items=items, caption=caption, provider=provider, format=video_format,
-                                            banned=banned), chosen=None)
-        return f"3 roteiros escritos no formato {format_label(video_format)} ({provider})."
+                                            banned=banned, style=style), chosen=None)
+        return (f"3 roteiros \"{SCRIPT_STYLES[style]['label']}\" escritos no formato {format_label(video_format)} "
+                f"({provider}).")
 
     def update_script(self, session_id, index, script=None, choose=False):
         row = self._row(session_id)
@@ -673,13 +806,23 @@ class Studio:
         if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(items):
             raise ValueError("Roteiro não encontrado.")
         if script is not None:
-            if not isinstance(script, dict) or set(script) - {"angle", *SCRIPT_FIELDS}:
+            if not isinstance(script, dict) or set(script) - {"angle", "callouts", *SCRIPT_FIELDS}:
                 raise ValueError("Campos do roteiro inválidos.")
+            script = dict(script)
+            callouts = script.pop("callouts", None)
+            if callouts is not None:
+                if scripts.get("style") != "problema":
+                    raise ValueError("Este roteiro não tem chamadas na tela.")
+                if not isinstance(callouts, list) or len(callouts) != CALLOUTS \
+                        or not all(isinstance(c, str) and len(c) <= 60 for c in callouts):
+                    raise ValueError(f"Chamadas: {CALLOUTS} textos curtos.")
             for key, value in script.items():
                 limit = NARRATION_LIMIT if key == "narration" else ANGLE_LIMIT if key == "angle" else SCRIPT_FIELD_LIMIT
                 if not isinstance(value, str) or len(value) > limit:
                     raise ValueError(f"{key}: texto de até {limit} caracteres.")
             items[index].update({k: v.strip() for k, v in script.items()}, edited=True)
+            if callouts is not None:
+                items[index]["callouts"] = [c.strip() for c in callouts]
             scripts["items"] = items
             self._save(session_id, scripts=scripts)
         if choose:
@@ -775,15 +918,19 @@ class Studio:
             raise ValueError("Sem fotos: mantenha a foto do anúncio ou envie fotos suas.")
         product = json.loads(row["product"])
         script = draft["scripts"][draft["chosen"]]
+        style = draft["scripts_style"] or "classico"
         snapshot = self._snapshot(row, product, draft["caption"]["text"] if draft["caption"] else "")
+        finish = dict(size=[1080, 1920], badge=badge(product), frames=True)
+        if style == "problema":
+            # The worker burns the 3 callouts and leaves the spoken narration without subtitles.
+            finish.update(subtitles=False, callouts=[c.strip().upper() for c in script.get("callouts") or []][:CALLOUTS])
         payload = dict(product=product["name"][:120], studio_id=session_id,
                        images=[{k: v for k, v in ref.items() if k != "id"} for ref in refs],
                        # Older workers read only image_url; the version check above keeps them away.
                        image_url=next((ref["url"] for ref in refs if ref.get("url")), ""),
                        prompt=studio_prompt(script, draft["scripts_format"] or draft["format"], row["facts"] or "",
-                                            len(refs)),
-                       narration=script["narration"],
-                       finish=dict(size=[1080, 1920], badge=badge(product), frames=True))
+                                            len(refs), style),
+                       narration=script["narration"], finish=finish)
         self.engine.videos.enqueue_studio(session_id, row["origin"], row["run_id"] if row["origin"] == "dia" else None,
                                           row["product_key"], product["name"], payload, snapshot)
         return self.get(session_id)
@@ -848,8 +995,9 @@ class Studio:
                          for p in photos]
         items = []
         script_format = scripts.get("format") or video_format
+        style = scripts.get("style") or "classico"  # drafts written before the styles existed are "classico"
         for script in scripts.get("items") or []:
-            problems = script_issues(script, product["name"], script_format, scripts.get("banned") or ())
+            problems = script_issues(script, product["name"], script_format, scripts.get("banned") or (), style)
             items.append(dict(script, problems=problems, words=len(script.get("narration", "").split())))
         caption = scripts.get("caption")
         if caption:
@@ -858,7 +1006,7 @@ class Studio:
                            problems=copy_problems(caption["description"], caption["hashtags"]))
         chosen = row["chosen"]
         refs = self.references(row)
-        prompt = (studio_prompt(items[chosen], script_format, row["facts"] or "", len(refs))
+        prompt = (studio_prompt(items[chosen], script_format, row["facts"] or "", len(refs), style)
                   if chosen is not None and chosen < len(items) else "")
         reservation = None
         if row["origin"] == "dia":
@@ -884,6 +1032,7 @@ class Studio:
                     facts=row["facts"] or "", format=video_format,
                     format_label=format_label(video_format) if video_format else "",
                     scripts=items, scripts_format=scripts.get("format"), provider=scripts.get("provider"),
+                    scripts_style=style if items else None,
                     caption=caption, chosen=chosen, prompt=prompt, job=job, reservation=reservation,
                     video=videos[0] if videos else None, videos=videos[:10], generation=generation,
                     created=row["created"], updated=row["updated"])

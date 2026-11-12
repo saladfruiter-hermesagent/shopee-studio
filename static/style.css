@@ -106,3 +106,8 @@ label:has(>input:user-invalid),label:has(>textarea:user-invalid){color:var(--dan
 .sv-product{display:flex;gap:8px;align-items:center;background:#fffffff0;color:#222;border-radius:8px;padding:5px 8px;text-shadow:none}.sv-product img{width:34px;height:34px;object-fit:cover;border-radius:4px;flex:none}
 .sv-product span{display:flex;flex-direction:column;min-width:0}.sv-product b{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sv-product small{font-size:11px;color:#ee4d2d;font-weight:700}
 @media(max-width:700px){.studio-preview{flex-direction:column;align-items:center}.studio-preview-side{width:100%}.shopee-frame{width:min(270px,100%)}}
+/* Estilo de roteiro "problema": seletor de estilo e as 3 chamadas com as cores que vão para o vídeo. */
+.studio-styles{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin:4px 0 14px}.studio-styles input{display:none}
+.studio-callouts{border:1px dashed var(--line-dashed);border-radius:8px;padding:6px 10px 10px;margin:10px 0 0}.studio-callouts legend{font-size:11px;font-weight:700;color:var(--muted);padding:0 4px}
+.studio-callouts label{margin-top:6px}.studio-callouts input{font-weight:800;text-transform:uppercase;letter-spacing:.3px;border-width:2px}
+.studio-callouts .callout-1 input{border-color:#e53935}.studio-callouts .callout-2 input{border-color:#e0b800}.studio-callouts .callout-3 input{border-color:#ee4d2d}
