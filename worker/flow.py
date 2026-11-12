@@ -19,6 +19,10 @@ FAILED = re.compile(r"n[aã]o (foi|consegui) (poss[ií]vel )?gerar|falh(a|ou) na
 FAILED_CARD = re.compile(r"^\s*warning|falha|algo deu errado|tente de novo", re.I)
 CHALLENGE = re.compile(r"n[aã]o sou um rob[oô]|unusual traffic|tr[aá]fego incomum|captcha|verify it'?s you|confirme que [eé] voc[eê]", re.I)
 COST_PANEL = re.compile(r"usar\s+(\d+)\s*cr[eé]ditos", re.I)
+# O Flow renomeia rótulos do seletor de mídia ("Enviar mídia" virou "Fazer upload de mídia" em 12/11/2026):
+# procure por padrão, no texto OU no aria-label, e nunca pela string exata de uma versão.
+UPLOAD_BUTTON = re.compile(r"enviar m[íi]dia|fazer upload|upload de m[íi]dia", re.I)
+INCLUDE_BUTTON = re.compile(r"incluir no comando", re.I)
 
 # Galeria do projeto em ordem do DOM (mais recente primeiro). Cada `flow-tile-container` é uma mídia:
 # imagem enviada (`flow-image-tile`, com o nome do arquivo), vídeo pronto (`flow-video-tile` com
@@ -295,36 +299,52 @@ class Flow:
     def attached(self):
         return self.page.evaluate("document.querySelectorAll('flow-creative-agent-prompt-box img, flow-base-prompt-box img').length")
 
+    def overlay_button(self, pattern, timeout=15):
+        """Primeiro botão VISÍVEL do overlay aberto cujo texto ou aria-label casa com `pattern` (regex)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            handle = self.page.evaluate_handle("""(source) => {
+                const re = new RegExp(source, 'i');
+                return [...document.querySelectorAll('.cdk-overlay-container button')]
+                    .filter(b => b.offsetParent !== null)
+                    .find(b => re.test((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || ''))) || null;
+            }""", pattern.pattern)
+            element = handle.as_element()
+            if element:
+                return element
+            time.sleep(0.5)
+        return None
+
     def attach_image(self, image, expected=1):
         """Envia a imagem e a insere na caixa de comando; `expected` = quantas imagens a caixa deve ter depois."""
         name = Path(image).name
         self.click_label("Adicionar elementos à caixa de comando", last=False)
-        upload = self.page.locator(".cdk-overlay-container button", has_text="Enviar mídia").first
-        upload.wait_for(timeout=15000)
+        upload = self.overlay_button(UPLOAD_BUTTON)
+        if upload is None:
+            raise FlowError("ui_changed", "Botão de upload do seletor de mídia não encontrado "
+                                          "(o Flow mudou o rótulo; veja o DOM em .cdk-overlay-container).")
         with self.page.expect_file_chooser(timeout=15000) as chooser:
             upload.click()
         chooser.value.set_files(str(image))
-        item = self.page.locator(".cdk-overlay-container button", has_text=name).first
-        item.wait_for(timeout=90000)
+        item = self.overlay_button(re.compile(re.escape(name)), timeout=90)
+        if item is None:
+            raise FlowError("ui_changed", f"A imagem {name} não apareceu no seletor de mídia depois do upload.")
         for _ in range(60):  # The item exists while still uploading; wait until it is clickable.
             if self.page.evaluate("""(name) => { const b = [...document.querySelectorAll('.cdk-overlay-container button')]
                 .find(b => b.innerText.includes(name)); return !!b && !b.disabled && !b.querySelector('mat-progress-spinner, [role=progressbar]'); }""", name):
                 break
             time.sleep(1)
         item.click()
-        # O picker novo insere a imagem direto no comando; versões anteriores pediam "Incluir no comando".
-        include = self.page.locator(".cdk-overlay-container button", has_text="Incluir no comando")
-        try:
-            include.first.wait_for(timeout=8000)
-        except Exception:
-            include = None
-        if include is not None:
-            for _ in range(3):  # O botão é re-renderizado enquanto a imagem sobe e pode sair do DOM no clique.
-                try:
-                    include.first.click(timeout=8000)
-                    break
-                except Exception:
-                    self.page.wait_for_timeout(1000)
+        # Algumas versões inserem a imagem no clique do item; outras mostram a prévia e pedem "Incluir no comando".
+        for _ in range(3):  # O botão é re-renderizado enquanto a imagem sobe e pode sair do DOM no clique.
+            include = self.overlay_button(INCLUDE_BUTTON, timeout=3)
+            if include is None:
+                break
+            try:
+                include.click(timeout=8000)
+                break
+            except Exception:
+                self.page.wait_for_timeout(1000)
         for _ in range(30):
             if self.attached() >= expected:
                 return
