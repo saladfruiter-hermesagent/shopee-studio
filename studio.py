@@ -1,9 +1,10 @@
-"""Estúdio: rascunhos de vídeo assistidos pelo usuário (PLANO_ESTUDIO.md, etapa S1).
+"""Estúdio: rascunhos de vídeo assistidos pelo usuário (PLANO_ESTUDIO.md, etapas S1 e S2).
 
 O usuário escolhe um produto (um dos reservados da consulta do dia ou qualquer anúncio colado pelo link), manda
-fotos pelo celular, revisa a ficha visual escrita pelo modelo, escolhe o formato e um entre três roteiros. A geração
-no Flow (S2) ainda não está aqui. Produto reservado sem nenhuma geração até o horário de corte cai para o vídeo
-automático (`fallback`)."""
+fotos pelo celular, revisa a ficha visual escrita pelo modelo, escolhe o formato e um entre três roteiros. Depois
+aprova o custo e o worker gera 1 cena no Flow com até 4 fotos de referência (S2); o vídeo pronto espera a prévia e
+só vai ao Telegram quando o usuário aprova. Produto reservado sem nenhuma geração até o horário de corte cai para o
+vídeo automático (`fallback`)."""
 import base64
 import binascii
 import json
@@ -17,11 +18,15 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from analysis import DATA_RULES
-from content import (CAPTION_LIMIT, CLOSING, MODERN_NARRATION_WORDS, SCRIPT_FIELD_LIMIT, VIDEO_SECONDS,
-                     caption_text, copy_problems, modern_script_problems, opening, script_problems, text_length)
+from content import (CAPTION_LIMIT, CLOSING, MODERN_NARRATION_WORDS, SCRIPT_FIELD_LIMIT, VIDEO_SECONDS, CaptionTooLong,
+                     caption_text, copy_problems, modern_script_problems, opening, script_problems, text_length,
+                     video_caption)
+from video import ACTIVE, Videos, badge
 
 MAX_PHOTOS = 6                 # fotos do usuário por produto, além da foto da API
 MAX_PHOTO_BYTES = 2_500_000    # depois de reduzida no navegador (~1280 px)
+MAX_FLOW_REFS = 4              # referências anexadas no Flow (S0: 4 entraram em Elementos pelo mesmo custo)
+WORKER_MIN_VERSION = (1, 3, 0)  # worker que anexa várias fotos e baixa as do painel
 FACTS_LIMIT = 1500
 NARRATION_LIMIT = 300
 ANGLE_LIMIT = 60
@@ -419,6 +424,7 @@ class Studio:
             manual = [self._lite(dict(r)) for r in db.execute(
                 "SELECT * FROM studio WHERE origin='manual' ORDER BY id DESC LIMIT 20")]
         return dict(slots=settings["studio_slots"], cutoff=settings["studio_cutoff"], today=self.today(), manual=manual,
+                    cost=settings["video_cost"], manual_credits=self.engine.videos.manual_credits(),
                     formats=[dict(key=k, label=f["label"], text=f["text"], person=f["person"], speaks=f["speaks"])
                              for k, f in STUDIO_FORMAT_SPECS.items()])
 
@@ -446,9 +452,17 @@ class Studio:
 
     def _lite(self, row):
         product, scripts = json.loads(row["product"]), json.loads(row["scripts"] or "null") or {}
+        video = self._videos(row["id"])[:1]
         return dict(id=row["id"], origin=row["origin"], name=product["name"], image=product.get("image") or "",
                     price=product.get("price", 0), commission=product.get("commission", 0),
-                    scripts=len(scripts.get("items") or []), chosen=row["chosen"], created=row["created"])
+                    scripts=len(scripts.get("items") or []), chosen=row["chosen"], created=row["created"],
+                    video=dict(state=video[0]["state"], label=video[0]["label"]) if video else None)
+
+    def _videos(self, session_id):
+        """Generations of a draft, newest first (public fields only)."""
+        with self.store.db() as db:
+            rows = [dict(r) for r in db.execute("SELECT * FROM videos WHERE studio_id=? ORDER BY id DESC", (session_id,))]
+        return [Videos._public(row) for row in rows]
 
     def open_day(self, run_id, key):
         delivery = self.store.deliveries(run_id).get(key)
@@ -494,8 +508,20 @@ class Studio:
 
     def delete(self, session_id):
         self._row(session_id)
+        videos = self._videos(session_id)
+        if videos and videos[0]["state"] in ACTIVE | {"sending"}:
+            raise ValueError("Há um vídeo deste rascunho em andamento; espere terminar antes de excluir.")
+        for video in videos:  # A preview nobody approved would keep the product of the day pending forever.
+            if video["state"] in ("review", "delivery_failed"):
+                self.engine.videos.discard(video["id"])
         with self.store.db() as db:
+            files = [r[0] for r in db.execute("SELECT file FROM videos WHERE studio_id=? AND file IS NOT NULL",
+                                              (session_id,))]
+            # The job rows stay (credits and history); only the files go with the draft.
+            db.execute("UPDATE videos SET file=NULL WHERE studio_id=?", (session_id,))
             db.execute("DELETE FROM studio WHERE id=?", (session_id,))
+        for name in files:
+            (self.engine.videos.directory / name).unlink(missing_ok=True)
         shutil.rmtree(self.directory / str(session_id), ignore_errors=True)
 
     # ---------- fotos ----------
@@ -672,6 +698,144 @@ class Studio:
         self._save(session_id, scripts=scripts)
         return self.get(session_id)
 
+    # ---------- vídeo no Flow (S2) ----------
+    def references(self, row):
+        """Photos that go to the Flow, main one first, up to MAX_FLOW_REFS. The listing photo goes by URL; the
+        user's photos by id, downloaded by the worker from the panel with its own token."""
+        product, photos = json.loads(row["product"]), json.loads(row["photos"] or "[]")
+        refs = []
+        for photo in sorted(photos, key=lambda p: not p.get("main")):
+            if photo["source"] == "api":
+                if product.get("image"):
+                    refs.append(dict(id="api", url=product["image"]))
+            elif (self.directory / str(row["id"]) / photo["file"]).is_file():
+                refs.append(dict(id=photo["id"], photo=photo["id"]))
+        return refs[:MAX_FLOW_REFS]
+
+    def fidelity_images(self, session_id, images):
+        """References of a finished job for the fidelity check (R1..R3); photos deleted since are skipped."""
+        result = []
+        for image in images[:3]:
+            name = f"R{len(result) + 1}"
+            if image.get("url"):
+                result.append(dict(name=name, url=image["url"]))
+            elif image.get("photo"):
+                try:
+                    path, kind = self.photo_file(session_id, image["photo"])
+                except ValueError:
+                    continue
+                result.append(dict(name=name, type=kind, data=base64.b64encode(path.read_bytes()).decode()))
+        return result
+
+    def worker_problem(self):
+        """Why the video worker cannot take a Studio job (None when it can). Offline is fine: the job waits."""
+        workers = [w for w in self.store.worker_status()["workers"] if "video" in w["kinds"]]
+        if not workers:
+            return "O worker de vídeo da VM ainda não se conectou ao painel."
+        version = workers[0]["version"] or "?"
+        if tuple(int(n) for n in re.findall(r"\d+", version)[:3]) < WORKER_MIN_VERSION:
+            return (f"O worker de vídeo da VM está na versão {version}; o Estúdio precisa da "
+                    f"{'.'.join(map(str, WORKER_MIN_VERSION))} ou mais nova (rode worker/install.sh na VM).")
+        return None
+
+    def _snapshot(self, row, product, caption):
+        """Message of the Telegram delivery: the Studio caption, with the links already frozen for the product of
+        the day (equivalents included) or the listing link of a manual product."""
+        links = [dict(key=product["key"], link=product["link"])] if product.get("link") else []
+        if row["origin"] == "dia":
+            delivery = self.store.deliveries(row["run_id"]).get(row["product_key"]) or {}
+            links = (json.loads(delivery["snapshot"]) if delivery.get("snapshot") else {}).get("links") or links
+        if not links:
+            raise ValueError("Produto sem link de afiliado para a mensagem do Telegram.")
+        try:
+            text = video_caption(dict(name=product["name"], link=links[0]["link"],
+                                      analysis=dict(caption=caption, links=links, status="ok")))
+        except CaptionTooLong as error:
+            raise ValueError(str(error)) from None
+        return dict(caption=text, links=links, name=product["name"][:120], studio_session=row["id"])
+
+    def generate(self, session_id, cost):
+        """The user approved the cost on the screen (E3): one generation of 1 scene with the chosen script."""
+        settings = self.store.settings()
+        if isinstance(cost, bool) or cost != settings["video_cost"]:
+            raise ValueError(f"O custo por vídeo agora é {settings['video_cost']} créditos; confira e aprove de novo.")
+        row = self._row(session_id)
+        draft = self.get(session_id)
+        if draft["chosen"] is None or not draft["prompt"]:
+            raise ValueError("Escolha um roteiro antes de gerar o vídeo.")
+        if draft["scripts_format"] and draft["scripts_format"] != draft["format"]:
+            raise ValueError("Os roteiros foram escritos para outro formato: gere os roteiros de novo ou volte o formato.")
+        if draft["reservation"] and draft["reservation"]["fallback"]:
+            raise ValueError("Passou do horário de corte: este produto já seguiu para o vídeo automático.")
+        problem = self.worker_problem()
+        if problem:
+            raise ValueError(problem)
+        refs = self.references(row)
+        if not refs:
+            raise ValueError("Sem fotos: mantenha a foto do anúncio ou envie fotos suas.")
+        product = json.loads(row["product"])
+        script = draft["scripts"][draft["chosen"]]
+        snapshot = self._snapshot(row, product, draft["caption"]["text"] if draft["caption"] else "")
+        payload = dict(product=product["name"][:120], studio_id=session_id,
+                       images=[{k: v for k, v in ref.items() if k != "id"} for ref in refs],
+                       # Older workers read only image_url; the version check above keeps them away.
+                       image_url=next((ref["url"] for ref in refs if ref.get("url")), ""),
+                       prompt=studio_prompt(script, draft["scripts_format"] or draft["format"], row["facts"] or "",
+                                            len(refs)),
+                       narration=script["narration"],
+                       finish=dict(size=[1080, 1920], badge=badge(product), frames=True))
+        self.engine.videos.enqueue_studio(session_id, row["origin"], row["run_id"] if row["origin"] == "dia" else None,
+                                          row["product_key"], product["name"], payload, snapshot)
+        return self.get(session_id)
+
+    def _video(self, session_id, video_id):
+        with self.store.db() as db:
+            row = db.execute("SELECT * FROM videos WHERE id=? AND studio_id=?", (video_id, session_id)).fetchone()
+        if not row:
+            raise ValueError("Vídeo não encontrado neste rascunho.")
+        return dict(row)
+
+    def send_video(self, session_id, video_id):
+        """Preview approved (E4): one Telegram message with the video, the Studio caption and the links."""
+        row, video = self._row(session_id), self._video(session_id, video_id)
+        if video["state"] not in ("review", "delivery_failed"):
+            raise ValueError("Este vídeo não está esperando envio.")
+        draft = self.get(session_id)
+        product = json.loads(row["product"])
+        # The caption may have been edited after the generation: the message uses the one approved now.
+        fresh = self._snapshot(row, product, draft["caption"]["text"] if draft["caption"] else "")
+        snapshot = dict(json.loads(video["snapshot"] or "{}"), **fresh)
+        with self.store.db() as db:
+            db.execute("UPDATE videos SET snapshot=? WHERE id=?", (json.dumps(snapshot), video_id))
+            if row["origin"] == "dia":
+                delivery = db.execute("SELECT snapshot FROM deliveries WHERE run_id=? AND product_key=?",
+                                      (row["run_id"], row["product_key"])).fetchone()
+                if delivery and delivery[0]:
+                    frozen = dict(json.loads(delivery[0]), caption=snapshot["caption"])
+                    db.execute("UPDATE deliveries SET snapshot=? WHERE run_id=? AND product_key=?",
+                               (json.dumps(frozen), row["run_id"], row["product_key"]))
+        self.engine.videos.deliver(video_id, manual=True)
+        return self.get(session_id)
+
+    def discard_video(self, session_id, video_id):
+        self._video(session_id, video_id)
+        self.engine.videos.discard(video_id)
+        return self.get(session_id)
+
+    def video_file(self, session_id, video_id):
+        video = self._video(session_id, video_id)
+        path = self.engine.videos.directory / video["file"] if video["file"] else None
+        if not path or not path.is_file():
+            raise ValueError("Arquivo do vídeo não está mais no painel.")
+        return path
+
+    def worker_photo(self, task, photo_id):
+        """Photo of a Studio job for the worker that claimed it; only ids listed in the job payload."""
+        payload = task["payload"]
+        if not payload.get("studio_id") or photo_id not in [i.get("photo") for i in payload.get("images") or []]:
+            raise ValueError("Foto não faz parte desta tarefa.")
+        return self.photo_file(payload["studio_id"], photo_id)
+
     # ---------- leitura ----------
     def get(self, session_id):
         row = self._row(session_id)
@@ -693,7 +857,8 @@ class Studio:
             caption = dict(caption, text=text, length=text_length(text),
                            problems=copy_problems(caption["description"], caption["hashtags"]))
         chosen = row["chosen"]
-        prompt = (studio_prompt(items[chosen], script_format, row["facts"] or "", len(public_photos))
+        refs = self.references(row)
+        prompt = (studio_prompt(items[chosen], script_format, row["facts"] or "", len(refs))
                   if chosen is not None and chosen < len(items) else "")
         reservation = None
         if row["origin"] == "dia":
@@ -702,6 +867,15 @@ class Studio:
             reservation = dict(deadline=snapshot.get("studio_deadline"), fallback=bool(snapshot.get("studio_fallback")),
                                delivery=delivery.get("state"))
         job = json.loads(row["job"] or "null")
+        settings, videos = self.store.settings(), self._videos(row["id"])
+        for video in videos:
+            video["url"] = f"/api/studio/{row['id']}/videos/{video['id']}" if video["has_file"] else None
+        photo_urls = {p["id"]: p["url"] for p in public_photos}
+        generation = dict(cost=settings["video_cost"], used=self.engine.videos.used_today(),
+                          cap=settings["video_daily_credits"], manual=self.engine.videos.manual_credits(),
+                          refs=[photo_urls.get(r["id"]) for r in refs], max_refs=MAX_FLOW_REFS,
+                          enabled=settings["video_enabled"], paused=self.engine.videos.flag("video_pause"),
+                          worker_problem=self.worker_problem(), worker_online=self.store.worker_online("video"))
         return dict(id=row["id"], origin=row["origin"], run_id=row["run_id"], key=row["product_key"],
                     product={k: product.get(k) for k in ("name", "shop", "price", "commission", "rating", "sales",
                                                          "image", "link", "item_id", "shop_id")},
@@ -711,4 +885,5 @@ class Studio:
                     format_label=format_label(video_format) if video_format else "",
                     scripts=items, scripts_format=scripts.get("format"), provider=scripts.get("provider"),
                     caption=caption, chosen=chosen, prompt=prompt, job=job, reservation=reservation,
+                    video=videos[0] if videos else None, videos=videos[:10], generation=generation,
                     created=row["created"], updated=row["updated"])

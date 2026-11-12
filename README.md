@@ -117,7 +117,7 @@ Plano e decisões em [`PLANO_ESTUDIO.md`](PLANO_ESTUDIO.md). Menu **Estúdio**, 
 - **Manual:** cole o link de qualquer anúncio (completo ou curto `s.shopee.com.br`; o link curto é resolvido só pelo
   redirecionamento, sem abrir a página nem passar por captcha). O painel busca o anúncio na Open API
   (`productOfferV2(itemId, shopId)`); produto fora do programa de afiliados é recusado. Avisos sem bloquear: já entregue
-  ou reservado antes, no top de afiliados do dia, sem foto. Vídeos manuais ficam fora do teto diário (etapa S2).
+  ou reservado antes, no top de afiliados do dia, sem foto. Vídeos manuais ficam fora do teto diário.
 
 Em cada rascunho:
 1. **Fotos:** a foto do anúncio mais até 6 fotos suas, reduzidas no navegador (lado maior 1.280 px, JPEG) antes de
@@ -133,10 +133,25 @@ Em cada rascunho:
    regras do Modo Moderno (18–25 palavras, termina em "produto marcado", sem "Olha"/"Gente" nem abertura repetida,
    nenhum número fora do nome) e as 3 narrações começam diferente. Edição livre: o card mostra o que fugiu das regras
    sem bloquear. Ao escolher um, aparece o prompt do Flow.
+5. **Vídeo (S2):** "Gerar vídeo · N créditos" mostra as fotos que vão ao Flow (até **4**, a principal primeiro), o
+   prompt e o custo, e só cria a tarefa depois do `confirm` (E3). O painel recusa sem criar nada se o custo mudou desde
+   que a tela abriu, se o worker de vídeo for anterior ao **1.3.0**, com a geração desligada ou pausada, roteiros de
+   outro formato ou produto do dia que já passou do corte. **Do dia** conta no teto diário; **Manual** fica fora (o
+   painel mostra quanto foi gasto em manuais no dia e no mês). Um vídeo por vez por rascunho.
+   O worker anexa as referências em **Elementos** (fotos suas são baixadas do painel com o token do worker,
+   `GET /api/worker/tasks/<id>/images/<foto>`, só as listadas na tarefa), confere que a caixa tem exatamente N anexos,
+   gera 1 cena de 10 s e acabamento do Modo Moderno (1080×1920, legenda, selo). Pronto, o vídeo fica em **"pronto,
+   aguardando sua aprovação"** (`review`): nada vai ao Telegram sozinho (E4). A prévia toca dentro de uma moldura que
+   imita a Shopee Vídeo, com a fidelidade (quadros × até 3 fotos de referência), a legenda que vai ao Telegram e as ações
+   **Aprovar e enviar ao Telegram** (uma mensagem com vídeo, legenda do Estúdio — a salva no momento do envio — e os
+   links; no Do dia, os mesmos links congelados no envio da consulta), **Descartar e gerar outro** (novo custo) e
+   **Descartar** (os créditos continuam contados). O arquivo fica no painel depois do envio para rever e baixar; vai
+   embora ao descartar ou excluir o rascunho (as linhas de `videos` ficam, com os créditos).
 
 Chamadas ao modelo rodam em segundo plano (a página acompanha); reiniciar o painel no meio marca a chamada como falha
-e mantém o rascunho. **Nesta versão (S1) o Estúdio não gera vídeo nem gasta créditos**: a geração no Flow com várias
-referências, aprovação de custo e prévia antes do Telegram é a etapa S2.
+e mantém o rascunho. A geração usa a mesma fila, pausa e regras de crédito dos vídeos automáticos: falha antes do envio
+ao Flow libera nova tentativa sem custo; falha depois fica "incerta" e o painel pede para conferir o Flow antes de
+gerar de novo. Produto do dia com qualquer geração (mesmo descartada) não cai no vídeo automático do corte.
 
 ## Unraid / Compose Manager
 

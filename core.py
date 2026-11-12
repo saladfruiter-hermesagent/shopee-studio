@@ -211,7 +211,9 @@ class Store:
             """)
             # Additive migrations only: old rows keep their data and stay readable.
             for table, column, kind in (("runs", "progress", "TEXT"), ("videos", "snapshot", "TEXT"),
-                                        ("deliveries", "snapshot", "TEXT"), ("deliveries", "message_id", "INTEGER")):
+                                        ("deliveries", "snapshot", "TEXT"), ("deliveries", "message_id", "INTEGER"),
+                                        # Estúdio (S2): job from a draft; origin 'manual' stays out of the daily cap.
+                                        ("videos", "studio_id", "INTEGER"), ("videos", "origin", "TEXT")):
                 if column not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             db.execute("INSERT OR IGNORE INTO llm VALUES(1,?)", (json.dumps(LLM_DEFAULTS),))

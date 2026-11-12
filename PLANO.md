@@ -71,8 +71,10 @@ Nada aqui gasta crédito do Flow, chama a Shopee ou o Telegram: é `templates/in
 
 ## 3. Estúdio — [`PLANO_ESTUDIO.md`](PLANO_ESTUDIO.md)
 
-- **S2 (próximo):** geração no Flow com várias referências (Elementos), aprovação de custo, prévia na moldura, manual
-  fora do teto. **Gasta créditos** — começar só com orçamento definido.
+- **S2 (implementada, aguardando seu teste):** passo 5 do rascunho — gerar no Flow com até 4 referências (Elementos),
+  aprovação do custo, prévia na moldura da Shopee Vídeo, enviar/descartar; Manual fora do teto. Para entrar em produção:
+  merge + `Update Stack` **e** atualizar o worker da VM para 1.3.0 (`worker/install.sh`). **Gasta créditos** — a
+  primeira geração real (15 créditos) é combinada com você.
 - **S3:** métricas por vídeo (vendas automáticas do `conversionReport`; views/cliques opcionais).
 - **S4:** várias cenas com narração única — depende da S3.
 

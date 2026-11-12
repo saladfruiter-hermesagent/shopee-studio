@@ -241,7 +241,7 @@ class Flow:
         raise FlowError("ui_changed", "Não consegui desligar o modo Agente do Flow; sem isso não há chave de vídeo.")
 
     def ensure_settings(self, model, expected_cost=None):
-        """Agente desligado + compositor em Vídeo, 9:16, 720p, 10 s, x1 e modelo esperado.
+        """Agente desligado + compositor em Vídeo, Elementos, 9:16, 720p, 10 s, x1 e modelo esperado.
 
         Devolve o custo que o Flow mostra para a geração. Com o Agente desligado não existe cartão
         de confirmação: os créditos saem no envio, então quem chama avisa o painel antes.
@@ -253,7 +253,8 @@ class Flow:
                 .some(b => b.innerText.trim().endsWith('Vídeo'))"""):
             raise FlowError("ui_changed", "O painel do compositor não oferece a opção Vídeo "
                                           "(modo Agente ainda ativo?).")
-        for label in ("Vídeo", "9:16", "720p", "10s", "x1"):
+        # Elementos: as imagens anexadas são referências do produto (em Frames, 2 imagens viram quadro inicial/final).
+        for label in ("Vídeo", "Elementos", "9:16", "720p", "10s", "x1"):
             self.pick(pane, label)
         state = pane.evaluate("""(pane) => ({
             modelo: (pane.querySelector('button[aria-label="Selecionar família de modelos"]')?.innerText || '')
@@ -291,7 +292,11 @@ class Flow:
                 time.sleep(1)
         raise FlowError("ui_changed", "Caixa de comando do Flow não ficou visível.")
 
-    def attach_image(self, image):
+    def attached(self):
+        return self.page.evaluate("document.querySelectorAll('flow-creative-agent-prompt-box img, flow-base-prompt-box img').length")
+
+    def attach_image(self, image, expected=1):
+        """Envia a imagem e a insere na caixa de comando; `expected` = quantas imagens a caixa deve ter depois."""
         name = Path(image).name
         self.click_label("Adicionar elementos à caixa de comando", last=False)
         upload = self.page.locator(".cdk-overlay-container button", has_text="Enviar mídia").first
@@ -321,10 +326,19 @@ class Flow:
                 except Exception:
                     self.page.wait_for_timeout(1000)
         for _ in range(30):
-            if self.page.evaluate("document.querySelectorAll('flow-creative-agent-prompt-box img, flow-base-prompt-box img').length"):
+            if self.attached() >= expected:
                 return
             time.sleep(1)
-        raise FlowError("ui_changed", "A imagem não entrou na caixa de comando.")
+        raise FlowError("ui_changed", f"A imagem {name} não entrou na caixa de comando.")
+
+    def attach_images(self, images):
+        """Anexa as referências uma a uma e confere que a caixa tem exatamente essa quantidade (nada sobrando de
+        uma tarefa anterior, nada faltando). Tudo antes do envio: falhar aqui não gasta crédito."""
+        for number, image in enumerate(images, 1):
+            self.attach_image(image, expected=number)
+        count = self.attached()
+        if count != len(images):
+            raise FlowError("ui_changed", f"A caixa de comando ficou com {count} imagem(ns); o esperado era {len(images)}.")
 
     def tiles(self):
         return self.page.evaluate("document.querySelectorAll('flow-video-tile').length")
@@ -496,16 +510,22 @@ class Flow:
         pending.value.save_as(str(destination))
         return Path(destination)
 
-    def generate(self, project_url, image, prompt, expected_cost, model, before_approve, on_stage,
+    def generate(self, project_url, images, prompt, expected_cost, model, before_approve, on_stage,
                  workdir, dry_run=False):
+        """`images`: um caminho (vídeo automático) ou a lista de referências do Estúdio, a principal primeiro."""
+        images = [images] if isinstance(images, (str, Path)) else list(images)
+        if not 1 <= len(images) <= 4:
+            raise FlowError("ui_changed", f"{len(images)} imagens de referência; o Flow recebe de 1 a 4.")
         self.open_project(project_url)
         on_stage("preparing")
-        cost = self.ensure_settings(model, expected_cost)  # Agente desligado + chave Vídeo
+        cost = self.ensure_settings(model, expected_cost)  # Agente desligado + chave Vídeo + Elementos
         self.new_session()
-        self.attach_image(image)
+        self.attach_images(images)
         before = self.counts()
-        command = (f"Gere agora exatamente 1 vídeo com o modelo {model}, proporção 9:16, 10 segundos, usando a "
-                   f"imagem anexada como referência do produto. Não faça perguntas. {prompt}")
+        refs = ("a imagem anexada como referência do produto" if len(images) == 1 else
+                f"as {len(images)} imagens anexadas como referência do mesmo produto")
+        command = (f"Gere agora exatamente 1 vídeo com o modelo {model}, proporção 9:16, 10 segundos, usando "
+                   f"{refs}. Não faça perguntas. {prompt}")
         if dry_run:
             self.log(f"Flow: dry_run; nada enviado ({cost} créditos seriam gastos).")
             return None
@@ -520,6 +540,7 @@ class Flow:
                 raise FlowError("cost_mismatch", f"Flow pediu {approved} créditos ('{text[:120]}'); o esperado era "
                                                  f"{expected_cost} para 1 geração. Geração recusada.")
             self.answer(True)
-        self.wait_render(before, Path(image).name)
+        # Âncora da galeria: a última imagem enviada é a mais nova; só o que está acima dela é desta tarefa.
+        self.wait_render(before, Path(images[-1]).name)
         on_stage("downloading")
         return self.download(Path(workdir) / "flow.mp4")

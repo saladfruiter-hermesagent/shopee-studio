@@ -90,3 +90,19 @@ textarea:focus{outline:2px solid var(--focus-line)}
 .field-error{display:block;font-size:11px;font-weight:600;color:var(--danger-ink);margin-top:6px}
 input:user-invalid,select:user-invalid,textarea:user-invalid{border-color:var(--invalid-line);background:var(--invalid-bg)}
 label:has(>input:user-invalid),label:has(>textarea:user-invalid){color:var(--danger-ink)}
+/* Estúdio S2: geração no Flow e prévia na moldura da Shopee Vídeo (a moldura é sempre escura, como no app). */
+.studio-refs{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 12px}.studio-refs img{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:var(--surface-3)}
+.studio-details{margin:10px 0}.studio-details summary{cursor:pointer;font-weight:600;font-size:13px;padding:6px 0}.studio-history{margin:6px 0;padding-left:18px;font-size:12px;color:var(--muted)}
+.studio-generate{margin:14px 0 6px}.studio-generate .primary{width:auto}.studio-generate .hint{margin-top:8px}
+.studio-video-state{border-radius:8px;padding:10px 14px;font-size:13px;margin:12px 0;background:var(--info-bg);color:var(--info-ink)}.studio-video-state.running{background:var(--warn-soft-bg);color:var(--warn-ink)}.studio-video-state.failed{background:var(--bad-bg);color:var(--bad-ink)}.studio-video-state.ok{background:var(--ok-soft-bg);color:var(--ok-ink)}
+.studio-preview{display:flex;gap:22px;align-items:flex-start;margin:14px 0}.studio-preview-side{flex:1;min-width:0}.studio-preview-side .studio-video-state{margin-top:0}
+.studio-video-facts{margin:0 0 12px;padding-left:18px;font-size:12px;color:var(--muted)}.studio-video-facts .bad{color:var(--bad-ink);font-weight:600}.studio-video-facts .ok{color:var(--ok-ink)}
+.studio-message{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--surface-2);margin-bottom:12px}.studio-message p{margin-bottom:6px;font-size:13px}.studio-message .eyebrow{margin-bottom:6px}
+.shopee-frame{position:relative;flex:none;width:270px;aspect-ratio:9/16;border-radius:22px;overflow:hidden;background:#000;box-shadow:0 0 0 6px #111,0 10px 24px #0004;color:#fff}
+.shopee-frame video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.sv-side{position:absolute;right:10px;bottom:150px;display:flex;flex-direction:column;gap:16px;font-size:22px;text-shadow:0 1px 3px #000a;pointer-events:none}
+.sv-bottom{position:absolute;left:10px;right:52px;bottom:52px;pointer-events:none;text-shadow:0 1px 3px #000c}.sv-user{font-size:13px}
+.sv-caption{font-size:11px;line-height:1.35;margin:4px 0 8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sv-product{display:flex;gap:8px;align-items:center;background:#fffffff0;color:#222;border-radius:8px;padding:5px 8px;text-shadow:none}.sv-product img{width:34px;height:34px;object-fit:cover;border-radius:4px;flex:none}
+.sv-product span{display:flex;flex-direction:column;min-width:0}.sv-product b{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sv-product small{font-size:11px;color:#ee4d2d;font-weight:700}
+@media(max-width:700px){.studio-preview{flex-direction:column;align-items:center}.studio-preview-side{width:100%}.shopee-frame{width:min(270px,100%)}}
