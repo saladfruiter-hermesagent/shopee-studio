@@ -494,6 +494,40 @@ def create_app(data_dir=None, testing=False):
         payload = body()
         return jsonify(studio.save_caption(session_id, payload.get("description"), payload.get("hashtags")))
 
+    @app.post("/api/studio/<int:session_id>/generate")
+    def studio_generate(session_id):
+        # The body carries the cost the user saw and approved (E3); a different current cost is refused.
+        return jsonify(studio.generate(session_id, body().get("cost"))), 202
+
+    @app.post("/api/studio/<int:session_id>/videos/<int:video_id>/send")
+    def studio_video_send(session_id, video_id):
+        body()
+        return jsonify(studio.send_video(session_id, video_id))
+
+    @app.post("/api/studio/<int:session_id>/videos/<int:video_id>/discard")
+    def studio_video_discard(session_id, video_id):
+        body()
+        return jsonify(studio.discard_video(session_id, video_id))
+
+    @app.get("/api/studio/<int:session_id>/videos/<int:video_id>")
+    def studio_video(session_id, video_id):
+        from flask import send_file
+        # conditional=True answers Range requests (206): the <video> element seeks and streams on the phone.
+        download = request.args.get("download") == "1"
+        return send_file(studio.video_file(session_id, video_id), mimetype="video/mp4", conditional=True,
+                         as_attachment=download, download_name=f"estudio-{session_id}-video-{video_id}.mp4")
+
+    @app.get("/api/worker/tasks/<int:task_id>/images/<photo_id>")
+    def worker_image(task_id, photo_id):
+        from flask import send_file
+        worker_id = worker_identity({"worker_id": request.headers.get("X-Worker-Id")})
+        task = store.task(task_id)
+        if task["status"] != "claimed" or task["worker_id"] != worker_id:
+            raise ValueError("Tarefa expirada ou de outro worker.")
+        store.worker_touch(worker_id)
+        path, kind = studio.worker_photo(task, photo_id)
+        return send_file(path, mimetype=kind)
+
     if not testing:
         engine.start()
     return app

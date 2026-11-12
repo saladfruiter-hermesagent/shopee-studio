@@ -1,7 +1,8 @@
 # Plano — Estúdio (geração de vídeo assistida, no painel)
 
-> Estado: **proposta para revisão** — nada implementado. Inspirado no ShôStudio (shoradar.com.br), adaptado ao
-> que o Shopee Studio já tem (Flow/Veo via worker, legendas, selo, entrega no Telegram).
+> Estado: **S1 em produção; S2 implementada no PR do branch `feat/estudio-s2`, aguardando teste do usuário.** Inspirado
+> no ShôStudio (shoradar.com.br), adaptado ao que o Shopee Studio já tem (Flow/Veo via worker, legendas, selo, entrega
+> no Telegram).
 
 ## 0. Objetivo e hipótese
 
@@ -20,9 +21,9 @@ Escala combinada: **~2 vídeos por dia** feitos no Estúdio, durante algumas sem
 |---|---|---|
 | E1 | A consulta diária seleciona **4** produtos: os **2 mais bem colocados** vão sempre para o Estúdio (ficam esperando o usuário, sem geração automática) e os **outros 2** seguem o fluxo automático. A intenção é dar mais capricho aos melhores, não fazer uma comparação equilibrada. | confirmada pelo usuário (`top_count = 4` já salvo em produção, conferido em 10/11/2026) |
 | E2 | Fotos extras vêm **do usuário, pelo celular**, na própria tela do Estúdio. Nenhuma raspagem da Shopee; a D10 (galeria automática abortada) continua valendo para o fluxo automático. | confirmada pelo usuário |
-| E3 | Toda geração mostra o custo em créditos lido no compositor e só sai com aprovação explícita na tela (mesma regra 2 do README). Refazer uma cena é uma nova aprovação. Vale também para a aba Manual. | proposta |
-| E4 | Nada vai ao Telegram sem o usuário aprovar a prévia. | proposta |
-| E5 | Primeira entrega com **1 cena + várias referências**; várias cenas só depois de medir (ver §6, risco de vozes diferentes). | proposta |
+| E3 | Toda geração mostra o custo em créditos lido no compositor e só sai com aprovação explícita na tela (mesma regra 2 do README). Refazer uma cena é uma nova aprovação. Vale também para a aba Manual. | implementada na S2 (pedido do usuário em 12/11/2026) |
+| E4 | Nada vai ao Telegram sem o usuário aprovar a prévia. | implementada na S2 (estado `review`) |
+| E5 | Primeira entrega com **1 cena + várias referências**; várias cenas só depois de medir (ver §6, risco de vozes diferentes). | implementada na S2 (1 cena, até 4 referências) |
 | E6 | Medição por vídeo: **vendas automáticas** pelo `conversionReport` (canal Shopee Video, cruzando `itemId`/`shopId`); **views e cliques no produto opcionais**, preenchidos pelo usuário quando quiser (campo rápido ou print lido por modelo). Sem os opcionais, a comparação usa só vendas. A API não tem views nem cliques (S0-b). | confirmada pelo usuário (opção 2) |
 | E7 | Uso **só em casa** (Wi-Fi): o painel continua só na LAN, sem acesso remoto. | confirmada pelo usuário |
 | E8 | Os vídeos **Do dia** (auto + Estúdio) entram no teto diário (`video_daily_credits`, hoje 100): 4 × 15 = 60 → sobram 40 (2 regerações). Várias cenas (S4) estouram: 2 auto (30) + 2 × 3 cenas (90) = 120. | confirmada pelo usuário; teto a rever na S4 |
@@ -129,12 +130,28 @@ forma consistente nas semanas de uso.
 
 Nenhuma decisão pendente.
 
+### Decisões da S2 tomadas sem perguntar
+
+- **Até 4 referências** no Flow (a principal primeiro, depois a ordem das fotos): é o que a S0 testou sem aviso de
+  limite e pelo mesmo custo. Fotos além disso servem à ficha visual, não ao vídeo.
+- **Worker mínimo 1.3.0** para gerar no Estúdio: o merge não atualiza a VM, e o worker antigo ignoraria as fotos extras
+  (geraria com uma só). O painel recusa com a instrução de rodar `worker/install.sh`.
+- O vídeo pronto do Estúdio é um estado próprio (`review`), não o `rendered` do automático: assim a entrega periódica
+  (`reconcile`) nunca o manda sozinho.
+- **Arquivo mantido depois do envio** (para rever e baixar e postar na Shopee Vídeo); sai ao descartar ou excluir o
+  rascunho. Os registros em `videos` ficam com os créditos.
+- **Gerar de novo depois de "incerto"** é permitido, com aviso explícito no `confirm` para conferir o Flow antes (no
+  automático não há botão nesse caso). Depois de **enviado**, o rascunho não gera outro: crie outro rascunho.
+- A legenda do Telegram é a **salva no momento do envio** (pode ser editada depois da geração). No Do dia, os links são
+  os congelados no envio da consulta (com os equivalentes).
+- Descartar não devolve créditos (já foram gastos no Flow) e mantém o produto do dia com o Estúdio (não cai no corte).
+
 ## Andamento
 
 | Etapa | Como ficou | Estado |
 |---|---|---|
 | S0 | Sondagens sem crédito (seção 4) | feita em 10/11/2026 |
 | S1 | Menu **Estúdio** (abas Do dia / Manual), `studio.py`: reserva dos N melhores de cada envio (`studio_slots`, padrão **0** — produção não muda até o usuário pôr **2** em Preferências → Vídeo), corte `studio_cutoff` (22:00) com fallback para o vídeo automático quando não há **nenhuma** linha em `videos` do produto; aba Manual por link (curto ou completo) + `productOfferV2(itemId, shopId)`; até 6 fotos do celular (reduzidas no navegador); ficha visual e 3 roteiros pelo modelo, em segundo plano; edição com as regras mostradas sem bloquear; prompt do Flow do roteiro escolhido. Sem geração, sem crédito. | implementada, testes `tests/test_estudio.py`; aguardando teste do usuário no pc1 |
-| S2 | Geração no Flow com várias referências (Elementos), aprovação de custo, prévia na moldura, manual fora do teto | pendente |
+| S2 | Passo **5 · Vídeo** do rascunho: até 4 referências (principal primeiro) em **Elementos**, `confirm` com custo/teto e recusa se o custo mudou; Do dia no teto, Manual fora (gasto do dia/mês na tela); worker 1.3.0 baixa as fotos do usuário do painel e confere N anexos; vídeo pronto fica em `review` com prévia numa moldura da Shopee Vídeo, fidelidade contra as referências e ações enviar / descartar e gerar outro / descartar; arquivo mantido para rever e baixar. Validação sem crédito no Flow real: 2 anexos, custo 15, nada enviado. | implementada, testes `tests/test_estudio_video.py` (178 no total); falta o teste do usuário e **1 geração real combinada** |
 | S3 | Métricas por vídeo (vendas automáticas do `conversionReport`, views/cliques opcionais) | pendente |
 | S4 | Várias cenas com narração única | pendente, depende da S3 |

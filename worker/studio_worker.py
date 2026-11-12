@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 CONFIG = Path.home() / ".config" / "shopee-studio-worker" / "config.json"
 WORK = Path.home() / ".cache" / "shopee-studio-worker"
 IMAGE_HOSTS = ("susercontent.com", "shopee.com.br", "shopee.com", "img.shopee")
@@ -125,6 +125,40 @@ def upload_video(url, token, task_id, worker_id, path):
         return json.load(response)
 
 
+def fetch_panel_photo(url, token, task_id, worker_id, photo, folder, name):
+    """Foto do Estúdio enviada pelo celular: só o painel tem o arquivo, então o worker baixa com o próprio token."""
+    if not str(photo).isalnum():
+        raise ValueError("id de foto inválido")
+    request = urllib.request.Request(f"{url}/api/worker/tasks/{task_id}/images/{photo}",
+                                     headers={"Authorization": f"Bearer {token}", "X-Worker-Id": worker_id})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        kind = response.headers.get_content_type()
+        data = response.read(IMAGE_LIMIT + 1)
+    if kind not in ("image/jpeg", "image/png") or len(data) > IMAGE_LIMIT:
+        raise ValueError(f"foto {photo} inválida")
+    path = folder / (name + (".png" if kind == "image/png" else ".jpg"))
+    path.write_bytes(data)
+    return path
+
+
+def task_images(config, task, worker_id, folder):
+    """Referências da tarefa, na ordem do anexo. Estúdio: `images` (até 4, a principal primeiro); automático: a
+    foto do anúncio em `image_url`. Os nomes são únicos por tarefa: a galeria do Flow usa o arquivo como âncora."""
+    payload = task["payload"]
+    images = payload.get("images") or []
+    if not images:
+        return [save_image(dict(name=f"produto{task['id']}", url=payload["image_url"]), folder)[1]]
+    paths = []
+    for number, image in enumerate(images[:4], 1):
+        name = f"p{task['id']}r{number}"
+        if image.get("photo"):
+            paths.append(fetch_panel_photo(config["panel_url"], config["token"], task["id"], worker_id, image["photo"],
+                                           folder, name))
+        else:
+            paths.append(save_image(dict(name=name, url=image.get("url", "")), folder)[1])
+    return paths
+
+
 def run_video(config, task, worker_id):
     """Generate in Flow, subtitle the narration, upload the MP4. Returns metadata; raises FlowError."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -138,7 +172,7 @@ def run_video(config, task, worker_id):
     charged = False
     try:
         progress("working")
-        _, image = save_image(dict(name=f"produto{task['id']}", url=payload["image_url"]), folder)
+        images = task_images(config, task, worker_id, folder)
         def stage(name, **extra):
             nonlocal charged
             charged = charged or name in ("submitted", "downloading")
@@ -152,7 +186,7 @@ def run_video(config, task, worker_id):
             charged = True
         with Flow(config["flow_profile"], config["display"], log=log) as flow:
             try:
-                raw = flow.generate(payload["project_url"], image, payload["prompt"], int(payload["expected_cost"]),
+                raw = flow.generate(payload["project_url"], images, payload["prompt"], int(payload["expected_cost"]),
                                     payload["model"], before_approve, stage, folder)
             except Exception:
                 flow.screenshot(WORK / "ultimo-erro.png")

@@ -1,5 +1,6 @@
 'use strict';
-// Estúdio (PLANO_ESTUDIO.md, S1): rascunho assistido do vídeo — fotos, ficha visual, formato e roteiros.
+// Estúdio (PLANO_ESTUDIO.md, S1 e S2): rascunho assistido do vídeo — fotos, ficha visual, formato, roteiros,
+// geração no Flow com aprovação do custo, prévia na moldura da Shopee Vídeo e envio ao Telegram só depois da aprovação.
 // Usa $, esc, api, post, money, date, toast e view de app.js (scripts clássicos compartilham o escopo global).
 let studioData=null,studioDraft=null,studioTab='day',studioPoll=null;
 const studioFields=[['hook','Gancho · 0–2 s'],['demo','Demonstração · 2–6 s'],['benefit','Prova · 6–8 s'],['cta','Chamada · 8–10 s']];
@@ -37,7 +38,7 @@ function renderStudioLists(){
   return studioCard(Object.assign({},i,{note,bad:i.fallback||['failed','blocked','refused'].includes(i.delivery)}),
    '<button class="secondary" data-studio-day="'+i.run_id+'" data-key="'+esc(i.key)+'">'+(i.session_id?'Continuar rascunho':'Abrir no Estúdio')+'</button>');
  }).join('')||'<p class="muted">Nenhum produto reservado ainda. Eles aparecem aqui depois do envio da consulta do dia.</p>';
- $('#studio-manual-list').innerHTML=d.manual.map(i=>studioCard(Object.assign({},i,{note:'Criado em '+hm(i.created)+(i.scripts?' · '+i.scripts+' roteiros':'')+(i.chosen!==null?' · roteiro escolhido':'')}),
+ $('#studio-manual-list').innerHTML=d.manual.map(i=>studioCard(Object.assign({},i,{note:'Criado em '+hm(i.created)+(i.video?' · vídeo: '+i.video.label:(i.scripts?' · '+i.scripts+' roteiros':'')+(i.chosen!==null?' · roteiro escolhido':''))}),
   '<button class="secondary" data-studio-open="'+i.id+'">Abrir</button>')).join('')||'<p class="muted">Cole o link de um produto para começar.</p>';
 }
 async function studioOpen(id){try{studioDraft=await api('/studio/'+id);showEditor();}catch(e){toast(e.message);}}
@@ -46,7 +47,7 @@ async function openStudioDay(runId,key){
  try{studioDraft=await post('/studio/day',{run_id:runId,key});showEditor();}catch(e){toast(e.message);studioLoad();}
 }
 async function showEditor(){if(!studioData)await studioLoad();$('#studio-home').hidden=true;$('#studio-editor').hidden=false;renderEditor();watchJob();$('#studio-editor').scrollIntoView();}
-function closeEditor(){studioDraft=null;clearTimeout(studioPoll);$('#studio-editor').hidden=true;$('#studio-home').hidden=false;studioLoad();}
+function closeEditor(){studioDraft=null;clearTimeout(studioPoll);clearTimeout(videoPoll);$('#studio-editor').hidden=true;$('#studio-home').hidden=false;studioLoad();}
 
 function watchJob(){
  clearTimeout(studioPoll);
@@ -89,11 +90,103 @@ function renderEditor(){
    '<div class="studio-actions"><button type="button" class="secondary" data-script-save="'+i+'">Salvar edição</button><button type="button" class="'+(s.chosen===i?'primary':'secondary')+'" data-script-choose="'+i+'">'+(s.chosen===i?'✓ Roteiro escolhido':'Usar este roteiro')+'</button></div></div>').join('')+'</div>'+
   (s.caption?'<div class="studio-caption"><p class="eyebrow">LEGENDA DO TELEGRAM · '+s.caption.length+'/150</p><label>Descrição<textarea id="studio-desc" rows="2" maxlength="300">'+esc(s.caption.description)+'</textarea></label><label>Hashtags (separadas por espaço)<input id="studio-tags" value="'+esc(s.caption.hashtags.join(' '))+'"></label>'+
    (s.caption.problems.length?'<ul class="studio-problems">'+s.caption.problems.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'')+'<button type="button" class="secondary" data-caption-save>Salvar legenda</button></div>':'')+'</article>';
- const prompt='<article class="panel"><p class="eyebrow">5 · VÍDEO</p><h3>Prompt para o Flow</h3>'+(s.prompt?'<pre class="studio-prompt">'+esc(s.prompt)+'</pre>':'<p class="hint">Escolha um roteiro para ver o prompt que vai ao Flow, com '+s.photos.length+' foto(s) de referência.</p>')+
-  '<button type="button" class="primary" disabled title="A geração no Flow chega na próxima etapa (S2)">Gerar vídeo · em breve</button><p class="hint">Nesta versão o Estúdio prepara tudo, sem gastar créditos. A geração no Flow (com aprovação do custo e prévia antes do Telegram) chega na próxima etapa.</p>'+
-  '<button type="button" class="text-button danger" data-studio-delete>Excluir rascunho</button></article>';
+ const prompt='<article class="panel" id="studio-video"></article>';
  $('#studio-editor').innerHTML=head+photos+facts+format+scripts+prompt;
  renderJob();
+ renderVideoPanel();
+}
+
+/* ---------- 5 · vídeo no Flow (S2): aprovar custo, acompanhar, prévia na moldura, enviar ou descartar ---------- */
+const videoActive=['queued','working','preparing','approving','submitted','downloading','subtitling','uploading','sending'];
+const videoRetry=['failed','unknown','discarded','skipped'];
+let videoPoll=null,videoPolls=0;
+function videoBlocker(){
+ const s=studioDraft,g=s.generation,r=s.reservation;
+ if(!s.prompt)return 'Escolha um roteiro (passo 4) para montar o prompt.';
+ if(s.scripts_format&&s.scripts_format!==s.format)return 'Os roteiros são de outro formato: gere de novo ou volte o formato.';
+ if(!g.refs.length)return 'Sem fotos de referência: mantenha a do anúncio ou envie fotos suas.';
+ if(r&&r.fallback)return 'Passou do corte: o produto já seguiu para o vídeo automático.';
+ if(!g.enabled)return 'Geração de vídeo desligada em Preferências → Vídeo.';
+ if(g.paused)return 'Vídeos pausados: '+g.paused.reason;
+ if(g.worker_problem)return g.worker_problem;
+ if(s.origin==='dia'&&g.used+g.cost>g.cap)return 'Teto diário atingido: '+g.used+' de '+g.cap+' créditos usados hoje.';
+ return '';
+}
+function videoBudget(){const g=studioDraft.generation;
+ return studioDraft.origin==='dia'?'Do dia: conta no teto diário ('+g.used+' de '+g.cap+' créditos usados hoje).':'Manual: fora do teto diário. Em vídeos manuais: '+g.manual.today+' créditos hoje, '+g.manual.month+' no mês.';}
+function shopeeFrame(v){
+ const s=studioDraft,p=s.product,c=s.caption;
+ return '<div class="shopee-frame"><video src="'+esc(v.url)+'" controls playsinline preload="metadata" width="270" height="480"></video>'+
+  '<div class="sv-side" aria-hidden="true"><span>♥</span><span>✉</span><span>↗</span></div>'+
+  '<div class="sv-bottom" aria-hidden="true"><b class="sv-user">@sua_loja</b>'+(c?'<p class="sv-caption">'+esc(c.text)+'</p>':'')+
+  '<div class="sv-product">'+(p.image?'<img src="'+esc(p.image)+'" alt="" width="34" height="34" referrerpolicy="no-referrer">':'')+'<span><b>'+esc(p.name)+'</b><small>'+money(p.price)+'</small></span></div></div></div>';
+}
+function videoFacts(v){const m=v.meta||{},f=m.fidelity;
+ return '<ul class="studio-video-facts">'+(m.duration?'<li>'+m.width+'×'+m.height+' · '+Number(m.duration).toFixed(1)+' s · '+(m.subtitles||0)+' legendas</li>':'')+
+  (f?(f.score!=null?'<li class="'+(f.score<7?'bad':'ok')+'">Fidelidade ao produto: '+f.score+'/10 · '+esc(f.reason)+'</li>':'<li>Fidelidade não avaliada ('+esc(f.error)+')</li>'):(v.state==='review'?'<li>Conferindo a fidelidade ao produto…</li>':''))+
+  '<li>'+v.credits+' créditos · gerado em '+hm(v.updated||v.created)+'</li></ul>';
+}
+function videoPreview(v){
+ const s=studioDraft,c=s.caption;
+ let actions='';
+ if(v.state==='review')actions='<button type="button" class="primary" data-video-send="'+v.id+'">Aprovar e enviar ao Telegram</button><button type="button" class="secondary" data-video-regenerate="'+v.id+'">Descartar e gerar outro · '+s.generation.cost+' créditos</button><button type="button" class="text-button danger" data-video-discard="'+v.id+'">Só descartar</button>';
+ else if(v.state==='delivery_failed')actions='<p class="warning">'+esc(v.error||'O Telegram recusou o vídeo.')+'</p><button type="button" class="primary" data-video-send="'+v.id+'">Reenviar ao Telegram</button><button type="button" class="text-button danger" data-video-discard="'+v.id+'">Descartar</button>';
+ else if(v.state==='sent')actions='<p class="studio-ok">✓ Enviado ao Telegram com a legenda e os links. Poste o vídeo na Shopee Vídeo com o produto marcado.</p>';
+ else if(v.state==='delivery_unknown')actions='<p class="warning">Entrega não confirmada: confira o Telegram. Não há reenvio automático.</p>';
+ const message=c?'<div class="studio-message"><p class="eyebrow">LEGENDA QUE VAI AO TELEGRAM</p><p>'+esc(c.text)+'</p>'+(c.problems.length?'<ul class="studio-problems">'+c.problems.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'')+'<p class="hint">Mais os links do produto. Para mudar, edite a legenda no passo 4 antes de enviar.</p></div>':'';
+ return '<div class="studio-preview">'+(v.url?shopeeFrame(v):'<p class="hint">O arquivo do vídeo não está mais no painel.</p>')+
+  '<div class="studio-preview-side"><p class="studio-video-state '+(v.state==='review'?'running':v.state==='sent'?'ok':'')+'">Vídeo #'+v.id+': '+esc(v.label)+'</p>'+videoFacts(v)+(v.state!=='sent'?message:'')+
+  '<div class="studio-actions">'+actions+'</div>'+(v.url?'<a class="text-button" href="'+esc(v.url)+'?download=1" download>Baixar o vídeo (MP4)</a>':'')+'</div></div>';
+}
+function renderVideoPanel(){
+ const box=$('#studio-video');if(!box||!studioDraft)return;
+ const s=studioDraft,g=s.generation,v=s.video;
+ let h='<p class="eyebrow">5 · VÍDEO</p><h3>Gerar no Flow e revisar antes de enviar</h3>'+
+  '<p class="hint">Vão para o Flow '+g.refs.length+' foto(s) de referência (até '+g.max_refs+', a principal primeiro). Nada vai ao Telegram antes da sua aprovação.</p>'+
+  '<div class="studio-refs">'+g.refs.map((u,i)=>'<img src="'+esc(u)+'" alt="Referência '+(i+1)+'" width="64" height="64" decoding="async" referrerpolicy="no-referrer">').join('')+'</div>'+
+  (s.prompt?'<details class="studio-details"><summary>Prompt que vai ao Flow</summary><pre class="studio-prompt">'+esc(s.prompt)+'</pre></details>':'');
+ if(v&&videoActive.includes(v.state))
+  h+='<p class="studio-video-state running">Vídeo #'+v.id+': '+esc(v.label)+' · '+v.credits+' créditos. A fila do Flow pode levar até 1 h; pode sair desta tela.'+(g.worker_online?'':' O worker de vídeo está offline agora: a geração espera na fila.')+'</p>';
+ else if(v&&['review','sent','delivery_failed','delivery_unknown'].includes(v.state))h+=videoPreview(v);
+ else if(v&&['failed','unknown'].includes(v.state))
+  h+='<p class="studio-video-state failed">Vídeo #'+v.id+': '+esc(v.label)+'. '+esc(v.error||'')+(v.state==='unknown'?' Confira o projeto no Flow antes de gerar de novo: o vídeo pode já existir lá.':'')+'</p>';
+ if(!v||videoRetry.includes(v.state)){
+  const blocker=videoBlocker();
+  h+='<div class="studio-generate"><button type="button" class="primary" data-video-generate '+(blocker?'disabled':'')+'>'+(v?'Gerar de novo':'Gerar vídeo')+' · '+g.cost+' créditos</button><p class="hint">'+esc(blocker||videoBudget())+'</p></div>';
+ }
+ if(s.videos.length>1)h+='<details class="studio-details"><summary>Gerações deste rascunho ('+s.videos.length+')</summary><ul class="studio-history">'+s.videos.map(x=>'<li>#'+x.id+' · '+hm(x.created)+' · '+esc(x.label)+' · '+x.credits+' créditos</li>').join('')+'</ul></details>';
+ h+='<button type="button" class="text-button danger" data-studio-delete>Excluir rascunho</button>';
+ box.innerHTML=h;
+ watchVideo();
+}
+function watchVideo(){
+ clearTimeout(videoPoll);const v=studioDraft?.video;
+ const waiting=v&&(videoActive.includes(v.state)||(v.state==='review'&&!(v.meta||{}).fidelity&&videoPolls<60));
+ if(!waiting){videoPolls=0;return;}
+ videoPoll=setTimeout(async()=>{
+  if(!studioDraft)return;videoPolls++;
+  try{const fresh=await api('/studio/'+studioDraft.id),before=studioDraft.video,after=fresh.video;
+   const changed=!before||!after||before.id!==after.id||before.state!==after.state||JSON.stringify(before.meta)!==JSON.stringify(after.meta);
+   studioDraft=Object.assign(studioDraft,{video:fresh.video,videos:fresh.videos,generation:fresh.generation});
+   if(changed){renderVideoPanel();if(after&&after.state==='review'&&before&&before.state!=='review')toast('Vídeo pronto: confira a prévia antes de enviar.');return;}
+  }catch(e){toast(e.message);}
+  watchVideo();
+ },6000);
+}
+async function studioGenerate(regenerate){
+ const s=studioDraft,g=s.generation,v=s.video,id=s.id;
+ const warn=v&&v.state==='unknown'?'\n\nATENÇÃO: a geração anterior ficou incerta e pode já ter gastado créditos. Confira o projeto no Flow antes.':'';
+ if(!confirm((regenerate?'Descartar o vídeo atual e gerar outro':'Gerar 1 vídeo no Flow')+' com '+g.refs.length+' foto(s) de referência?\n\nCusto: '+g.cost+' créditos (se o Flow pedir outro valor, nada é gerado).\n'+videoBudget()+warn))return;
+ try{
+  if(regenerate)studioDraft=await post('/studio/'+id+'/videos/'+v.id+'/discard');
+  studioDraft=await post('/studio/'+id+'/generate',{cost:g.cost});toast('Vídeo na fila do worker.');
+ }catch(e){toast(e.message);try{studioDraft=await api('/studio/'+id);}catch(_){}}
+ renderVideoPanel();
+}
+async function studioVideoAct(path,message,question){
+ if(question&&!confirm(question))return;
+ try{studioDraft=await post('/studio/'+studioDraft.id+'/videos/'+path);toast(message(studioDraft));}catch(e){toast(e.message);}
+ renderVideoPanel();
 }
 function readScript(card){const r={};card.querySelectorAll('[data-sf]').forEach(i=>r[i.dataset.sf]=i.value.trim());return r;}
 async function studioAct(promise,message){try{studioDraft=await promise;renderEditor();watchJob();if(message)toast(message);}catch(e){toast(e.message);}}
@@ -141,5 +234,9 @@ $('#studio-editor').addEventListener('click',e=>{
  else if(d.scriptSave)studioAct(post('/studio/'+id+'/scripts/'+d.scriptSave,{script:readScript(t.closest('.studio-script'))}),'Roteiro salvo.');
  else if(d.scriptChoose)studioAct(post('/studio/'+id+'/scripts/'+d.scriptChoose,{script:readScript(t.closest('.studio-script')),choose:true}),'Roteiro escolhido.');
  else if('captionSave' in d)studioAct(post('/studio/'+id+'/caption',{description:$('#studio-desc').value,hashtags:$('#studio-tags').value.split(/\s+/).filter(Boolean)}),'Legenda salva.');
+ else if('videoGenerate' in d)studioGenerate(false);
+ else if(d.videoRegenerate)studioGenerate(true);
+ else if(d.videoSend)studioVideoAct(d.videoSend+'/send',r=>r.video&&r.video.state==='sent'?'Vídeo enviado ao Telegram.':'Envio não confirmado: '+(r.video?r.video.label:''),'Enviar este vídeo ao Telegram com a legenda e os links do produto?');
+ else if(d.videoDiscard)studioVideoAct(d.videoDiscard+'/discard',()=>'Vídeo descartado. Os créditos continuam contados.','Descartar este vídeo? Os créditos já gastos não voltam.');
  else if('studioDelete' in d){if(confirm('Excluir este rascunho e as fotos enviadas?'))post('/studio/'+id+'/delete').then(()=>{toast('Rascunho excluído.');closeEditor();}).catch(err=>toast(err.message));}
 });
